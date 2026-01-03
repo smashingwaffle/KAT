@@ -1,0 +1,7 @@
+{
+  "cat_port": "COM11",
+  "baud_rate": "38400",
+  "rts_mode": "On",
+  "dtr_mode": "Off",
+  "default_com": "COM11"
+}

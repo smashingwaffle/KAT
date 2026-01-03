@@ -1,7 +1,9 @@
 import sys
 import time
+import json
 import xml.etree.ElementTree as ET
 from functools import partial
+from pathlib import Path
 
 import serial
 import serial.tools.list_ports
@@ -10,24 +12,20 @@ import threading
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QLabel, QPushButton, QComboBox,
     QHBoxLayout, QMessageBox, QProgressBar, QTextEdit, QTabWidget,
-    QFileDialog, QLineEdit, QStyleFactory,QGroupBox, QSlider, 
-    QCheckBox, QGridLayout   
+    QFileDialog, QLineEdit, QStyleFactory, QGroupBox, QSlider, 
+    QCheckBox, QGridLayout, QSpinBox, QFrame
 )
 from PyQt5.QtGui import (
     QPalette, QColor, QLinearGradient, QBrush, QPen, QFont, QPainter
 )
 from PyQt5.QtCore import Qt, QTimer
 
+from PyQt5.QtWidgets import QGraphicsDropShadowEffect
 
-
-from PyQt5.QtWidgets import QWidget, QHBoxLayout, QLabel, QFrame
-from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QColor
+# Settings file path
+SETTINGS_FILE = Path(__file__).parent / "kat_settings.json"
 
 SERIAL_READ_TIMEOUT_MS = 60  # quick peek window for IF reply
-
-from PyQt5.QtWidgets import QFrame, QLabel, QHBoxLayout, QGraphicsDropShadowEffect
-from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor
 
 class LEDIndicator(QFrame):
@@ -504,33 +502,27 @@ class FT991AController(QWidget):
 
         self.tabs.setStyleSheet("""
             QTabWidget::pane {
-                border: none;
-                background: transparent;
+                border: 1px solid #1e3a5f;
+                background: #0d2137;
+                border-radius: 6px;
             }
-
-            QTabBar {
-                background-color: transparent;
-            }
-
             QTabBar::tab {
-                background: #3a0ca3;
-                color: white !important;
-                padding: 6px 25px;
-                min-width: 100px;
+                background: #0d2137;
+                color: #607d8b;
+                padding: 8px 20px;
+                margin-right: 2px;
+                border-top-left-radius: 6px;
+                border-top-right-radius: 6px;
                 font-weight: bold;
-                font-size: 12px;
-                border-top-left-radius: 4px;
-                border-top-right-radius: 4px;
             }
-
             QTabBar::tab:selected {
-                background: #7209b7;
-                color: white !important;
+                background: #1a3a5c;
+                color: #64b5f6;
+                border-bottom: 2px solid #42a5f5;
             }
-
-            QTabBar::tab:hover {
-                background: #560bad;
-                color: white !important;
+            QTabBar::tab:hover:!selected {
+                background: #152a40;
+                color: #90caf9;
             }
         """)
 
@@ -538,346 +530,319 @@ class FT991AController(QWidget):
 
         self.main_tab = QWidget()
         self.cat_tab = QWidget()
-        self.tabs.addTab(self.main_tab, "Menu Reader")
-        self.tabs.addTab(self.cat_tab, "CAT Terminal")
+        self.settings_tab = QWidget()
+        self.tabs.addTab(self.main_tab, "📻 Menu Reader")
+        self.tabs.addTab(self.cat_tab, "🖥️ CAT Terminal")
+        self.tabs.addTab(self.settings_tab, "⚙️ Settings")
+        
+        # Build settings tab
+        self._build_settings_tab()
 
 
 ##gradient
         palette = QPalette()
         gradient = QLinearGradient(0, 0, 0, self.height())
-        gradient.setColorAt(0.0, QColor(33, 66, 109))
-        gradient.setColorAt(1.0, QColor(0, 0, 0))
+        gradient.setColorAt(0.0, QColor(13, 33, 55))
+        gradient.setColorAt(1.0, QColor(5, 15, 30))
         palette.setBrush(QPalette.Window, QBrush(gradient))
         self.setAutoFillBackground(True)
         self.setPalette(palette)
 
+        self.main_tab.setGeometry(0, 0, 1200, 1000)
 
+        # Common GroupBox style
+        groupbox_style = """
+            QGroupBox {
+                color: #a0c4ff;
+                font-weight: bold;
+                font-size: 13px;
+                border: 2px solid #1e3a5f;
+                border-radius: 10px;
+                margin-top: 12px;
+                padding-top: 10px;
+                background: #0d2137;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 15px;
+                padding: 0 10px;
+                background: #0d2137;
+            }
+        """
+
+        # ========== CONNECTION GROUP (top left) ==========
+        conn_group = QGroupBox("🔌 Connection", self.main_tab)
+        conn_group.setGeometry(15, 10, 320, 90)
+        conn_group.setStyleSheet(groupbox_style)
         
-# ➡ COM Port Label and Selector (absolute positioning)
-        self.com_label = QLabel("Select COM Port:", self.main_tab)
-        self.com_label.setGeometry(20, 26, 150, 30)  # Made slightly wider and taller for spacing
-        self.com_label.setStyleSheet("""
-            QLabel {
-                color: white;
-                font-weight: bold;
-                font-size: 12px;
-            }
-        """)
-
-
-# ➡ SIMPLEX SELECT Label and Selector (absolute positioning)
-        self.com_label = QLabel("SIMPLEX FREQ DIRECT", self.main_tab)
-        self.com_label.setGeometry(200, 100, 150, 30) 
-        self.com_label.setStyleSheet("""
-            QLabel {
-                color: white;
-                font-weight: bold;
-                font-size: 12px;
-            }
-        """)
-        self.com_label = QLabel("use with varafm", self.main_tab)
-        self.com_label.setGeometry(245, 230, 100, 30)  
-        self.com_label.setStyleSheet("""
-            QLabel {
-                color: white;
-                font-weight: bold;
-                font-size: 10px;
-            }
-        """)
-        self.com_selector = QComboBox(self.main_tab)
-        self.com_selector.setGeometry(130, 30, 100, 20)
-
-        ports = [port.device for port in serial.tools.list_ports.comports()]
-        self.com_selector.addItems(ports)
-        if "COM3" in ports:
-            self.com_selector.setCurrentText("COM3")
-
-# ➡ Connect button (absolute positioning, clean style)
-        self.connect_btn = QPushButton("Connect", self.main_tab)
-        self.connect_btn.setGeometry(280, 26, 120, 30)
+        self.connect_btn = QPushButton("Connect", conn_group)
+        self.connect_btn.setGeometry(15, 35, 130, 40)
         self.connect_btn.setStyleSheet("""
             QPushButton {
-                background-color: #80ff80;
-                color: black;
-                font-weight: bold;
-                border-radius: 6px;
-                padding: 6px;
+                background-color: #2e7d32; color: white; font-weight: bold;
+                border-radius: 8px; border: 2px solid #4caf50; font-size: 13px;
             }
-            QPushButton:hover {
-                background-color: #70e070;
-            }
-            QPushButton:pressed {
-                background-color: #60c060;
-            }
+            QPushButton:hover { background-color: #43a047; }
         """)
         self.connect_btn.clicked.connect(self.connect_to_radio)
-# ➡ Disconnect button (absolute positioning, clean style)
-        self.disconnect_btn = QPushButton("Disconnect", self.main_tab)
-        self.disconnect_btn.setGeometry(410,26,120, 30)
+        
+        self.disconnect_btn = QPushButton("Disconnect", conn_group)
+        self.disconnect_btn.setGeometry(155, 35, 130, 40)
         self.disconnect_btn.setStyleSheet("""
             QPushButton {
-                background-color: #ff8080;
-                color: black;
-                font-weight: bold;
-                border-radius: 6px;
-                padding: 6px;
+                background-color: #c62828; color: white; font-weight: bold;
+                border-radius: 8px; border: 2px solid #ef5350; font-size: 13px;
             }
-            QPushButton:hover {
-                background-color: #e07070;
-            }
-            QPushButton:pressed {
-                background-color: #c06060;
-            }
+            QPushButton:hover { background-color: #e53935; }
         """)
         self.disconnect_btn.clicked.connect(self.disconnect_from_radio)
 
-        # Just make everything inside self.main_tab directly:
-        self.main_tab.setGeometry(0, 0, 1200, 768)
+        # TX LED (next to connection group)
+        self.tx_led = LEDIndicator(diameter=20, label_text="TX")
+        self.tx_led.setParent(self.main_tab)
+        self.tx_led.setGeometry(345, 50, 80, 35)
 
-        # ✅ S-METER
+        # ========== METERS GROUP ==========
+        meters_group = QGroupBox("📊 Signal Meters", self.main_tab)
+        meters_group.setGeometry(620, 580, 570, 170)
+        meters_group.setStyleSheet(groupbox_style)
+
         s_meter_scale = [
             (0, "1"), (10, "3"), (20, "5"), (30, "7"), (40, "9"),
             (55, "+10"), (70, "+20"), (85, "+30"), (100, "+60")
         ]
         self.s_meter = RetroBarMeter("S-METER", s_meter_scale)
-        self.s_meter.setParent(self.main_tab)  # Set the parent here
-        self.s_meter.setGeometry(650, 5, 500, 28)
+        self.s_meter.setParent(meters_group)
+        self.s_meter.setGeometry(10, 30, 420, 28)
+        
+        self.s_meter_label = QLabel("S-METER", meters_group)
+        self.s_meter_label.setGeometry(520, 30, 50, 20)
+        self.s_meter_label.setStyleSheet("color: #64b5f6; font-weight: bold; font-size: 10px;")
 
-        self.s_meter_label = QLabel("S-METER", self.main_tab)
-        self.s_meter_label.setGeometry(650, 50, 500, 20)
-        self.s_meter_label.setStyleSheet("color: cyan; font-weight: bold;")
-        self.s_meter_label.setAlignment(Qt.AlignCenter)
-
-# PWR METER
         pwr_meter_scale = [
             (0, "0"), (17, "25"), (33, "50"), (50, "75"),
             (67, "100"), (83, "125"), (100, "150")
         ]
         self.pwr_meter = RetroBarMeter("PWR METER", pwr_meter_scale)
-        self.pwr_meter.setParent(self.main_tab)
-        self.pwr_meter.setGeometry(650, 80, 500, 30)
+        self.pwr_meter.setParent(meters_group)
+        self.pwr_meter.setGeometry(10, 85, 420, 20)
+        
+        self.pwr_meter_label = QLabel("PWR", meters_group)
+        self.pwr_meter_label.setGeometry(520, 65, 70, 28)
+        self.pwr_meter_label.setStyleSheet("color: #64b5f6; font-weight: bold; font-size: 10px;")
 
-        self.pwr_meter_label = QLabel("PWR METER", self.main_tab)
-        self.pwr_meter_label.setGeometry(650, 123, 500, 20)
-        self.pwr_meter_label.setStyleSheet("color: cyan; font-weight: bold;")
-        self.pwr_meter_label.setAlignment(Qt.AlignCenter)
-        # --- TX LED (small red dot + 'TX' label)
-        self.tx_led = LEDIndicator(diameter=14, label_text="TX")
-        self.tx_led.setParent(self.main_tab)
-        # x, y, w, h — w/h can be small; the widget sizes itself
-        self.tx_led.setGeometry(600, 32, 60, 18)
-
-         # ➡ NOW setup your meters (inside GUI elements)
-        self.is_transmitting = False  # TX simulation
-# ➡ THEN start polling (only after meters exist)
-        self.start_meter_polling()      
-        # --- TX poller
+        # Start meter polling
+        self.is_transmitting = False
+        self.start_meter_polling()
         self.tx_timer = QTimer(self)
         self.tx_timer.setInterval(250)
         self.tx_timer.timeout.connect(self._poll_tx_status)
         self.tx_timer.start()
 
-
-
-# ➡ Simplex Frequency Buttons (absolute positioning)
-        btn_style = """
-            QPushButton {
-                background-color: #4cc9f0;
-                color: black;
-                font-weight: bold;
-                border-radius: 6px;
-                padding: 6px;
-            }
-            QPushButton:hover { background-color: #3ab8df; }
-            QPushButton:pressed { background-color: #3ab8df; }
-        """
-
-        # Simplex presets
-        self.btn_mem_059 = QPushButton("144.420 MHz M059", self.main_tab)
-        self.btn_mem_059.setGeometry(10, 70, 130, 30)
-        self.btn_mem_059.setStyleSheet(btn_style)
-        self.btn_mem_059.clicked.connect(lambda: self.recall_memory_channel("059"))
-
-        self.btn_mem_060 = QPushButton("446.000 MHz M060)", self.main_tab)
-        self.btn_mem_060.setGeometry(150, 70, 120, 30)
-        self.btn_mem_060.setStyleSheet(btn_style)
-        self.btn_mem_060.clicked.connect(lambda: self.recall_memory_channel("060"))
-
-        self.btn_mem_061 = QPushButton("145.600 MHz M061", self.main_tab)
-        self.btn_mem_061.setGeometry(280, 70, 120, 30)
-        self.btn_mem_061.setStyleSheet(btn_style)
-        self.btn_mem_061.clicked.connect(lambda: self.recall_memory_channel("061"))
-
-
-        self.btn_mem_062 = QPushButton("433.500 MHz M 062", self.main_tab)
-        self.btn_mem_062.setGeometry(410, 70, 120, 30)
-        self.btn_mem_062.setStyleSheet(btn_style)
-        self.btn_mem_062.clicked.connect(lambda: self.recall_memory_channel("062"))
-
-        # Memory recall (DARN)
-        self.btn_mem_darn3 = QPushButton("DARN 3", self.main_tab)
-        self.btn_mem_darn3.setGeometry(20, 140, 120, 30)
-        self.btn_mem_darn3.setStyleSheet(btn_style)
-        self.btn_mem_darn3.clicked.connect(lambda: self.recall_memory_channel("004"))
-
-        self.btn_mem_darn2 = QPushButton("DARN 2", self.main_tab)
-        self.btn_mem_darn2.setGeometry(150, 140, 120, 30)
-        self.btn_mem_darn2.setStyleSheet(btn_style)
-        self.btn_mem_darn2.clicked.connect(lambda: self.recall_memory_channel("003"))
-
-
-
-
-        self.preset_btn_default = QPushButton("Default", self.main_tab)
-        self.preset_btn_default.setGeometry(20, 955, 100, 30)
-        self.preset_btn_default.setStyleSheet("background-color: #3a0ca3; color: white; font-weight: bold;")
-        self.preset_btn_default.clicked.connect(partial(self.activate_default_memory, "defaultv002.xml"))
-
-
-
-        self.preset_btn_ft8 = QPushButton("FT8", self.main_tab)
-        self.preset_btn_ft8.setGeometry(130, 255, 100, 30)
-        self.preset_btn_ft8.setStyleSheet("background-color: #3a0ca3; color: white; font-weight: bold;")
-        self.preset_btn_ft8.clicked.connect(partial(self.activate_ft8_memory, "FT8settings.xml"))
-
-        self.preset_btn_winlink = QPushButton("Winlink", self.main_tab)
-        self.preset_btn_winlink.setGeometry(240, 255, 100, 30)
-        self.preset_btn_winlink.setStyleSheet("background-color: #3a0ca3; color: white; font-weight: bold;")
-        self.preset_btn_winlink.clicked.connect(partial(self.activate_winlink_memory, "WINLINK_APRS.xml"))
-
-        self.preset_btn_aprs = QPushButton("APRS-pinpoint", self.main_tab)
-        self.preset_btn_aprs.setGeometry(350, 255, 100, 30)
-        self.preset_btn_aprs.setStyleSheet("background-color: #3a0ca3; color: white; font-weight: bold;")
-        self.preset_btn_aprs.clicked.connect(partial(self.activate_aprs_memory, "aprs.xml"))
-
-        self.preset_btn_ssb = QPushButton("SSB", self.main_tab)
-        self.preset_btn_ssb.setGeometry(460, 255, 100, 30)
-        self.preset_btn_ssb.setStyleSheet("background-color: #3a0ca3; color: white; font-weight: bold;")
-        self.preset_btn_ssb.clicked.connect(partial(self.activate_ssb_memory, "SSB_setting.xml"))
-
-        self.preset_btn_wiresx = QPushButton("WIRES-X", self.main_tab)
-        self.preset_btn_wiresx.setGeometry(570, 255, 100, 30)
-        self.preset_btn_wiresx.setStyleSheet("background-color: #3a0ca3; color: white; font-weight: bold;")
-        self.preset_btn_wiresx.clicked.connect(partial(self.activate_wiresx_memory, "WIRESX.xml"))
-
-                # ➡ Default 2 button (same preset file, recalls MC058)
-        self.preset_btn_default2 = QPushButton("Mic simplex" , self.main_tab)
-        self.preset_btn_default2.setGeometry(20, 220, 100, 30)
-        self.preset_btn_default2.setStyleSheet("background-color: #3a0ca3; color: white; font-weight: bold;")
-        self.preset_btn_default2.clicked.connect(partial(self.activate_default2_memory, "overrides_only.xml"))
-
-        # ➡ Mic default D3: apply stripped defaults, then recall DARN 3 (MC004)
-        self.preset_btn_mic_default_d3 = QPushButton("Mic darn3", self.main_tab)
-        self.preset_btn_mic_default_d3.setGeometry(20, 255, 100, 30)  # adjust position as needed
-        self.preset_btn_mic_default_d3.setStyleSheet("background-color: #3a0ca3; color: white; font-weight: bold;")
-        self.preset_btn_mic_default_d3.clicked.connect(
-            partial(self.activate_mic_default_d3, "overrides_only.xml")
-)
-
-
-
-# ➡ Save/Load Buttons (absolute positioning)
-        self.save_btn = QPushButton("📥 Download From Radio to File", self.main_tab)
-        self.save_btn.setGeometry(20,  305, 250, 30)
-        self.save_btn.setStyleSheet("background-color: #3a0ca3; color: white; font-weight: bold;")
-        self.save_btn.clicked.connect(self.load_all_menus)
-
-        self.load_btn = QPushButton("📤 Load From File to Radio", self.main_tab)
-        self.load_btn.setGeometry(280, 305, 250, 30)
-        self.load_btn.setStyleSheet("background-color: #3a0ca3; color: white; font-weight: bold;")
-        self.load_btn.clicked.connect(self.select_and_load_file)
-
-        # ➡ APRS → M059 button (applies APRS preset, recalls MC059)
-        self.preset_btn_aprs_m059 = QPushButton("APRS simplex", self.main_tab)
-        self.preset_btn_aprs_m059.setGeometry(350, 220, 100, 30)  
-        self.preset_btn_aprs_m059.setStyleSheet("background-color: #3a0ca3; color: white; font-weight: bold;")
-        self.preset_btn_aprs_m059.clicked.connect(partial(self.activate_aprs_simplex59, "aprs.xml"))
-
-# ➡ Text Display (absolute positioning)
-        self.text_display = QTextEdit(self.main_tab)
-        self.text_display.setGeometry(20, 350, 640, 200)  
-        self.text_display.setReadOnly(True)
-        self.text_display.setStyleSheet("background-color: #0f0f3d; color: white; font-family: Consolas; font-size: 11px;")
-
-
-# ➡ Status Label 
-
-        self.status_label = QLabel("READY", self.main_tab)
-        self.status_label.setGeometry(20, 550, 400, 30) 
-        self.status_label.setStyleSheet("""
-            QLabel {
-                color: white;
-                font-weight: bold;
-                font-size: 12px;
-            }
-        """)
-# ➡ Progress Bar 
-        self.progress_bar = QProgressBar(self.main_tab)
-        self.progress_bar.setGeometry(20, 580, 1160, 25)  #  Adjusted to fit under the status label
-        self.progress_bar.setValue(0)
-        self.progress_bar.setStyleSheet("""
-            QProgressBar {
-                border: 2px solid grey;
-                border-radius: 5px;
-                text-align: center;
-            }
-            QProgressBar::chunk {
-                background-color: rgb(165,97,201);
-                width: 10px;
-            }
-        """)
-
-# ➡ Tabs styling (unchanged)
-        self.tabs.setStyleSheet("""
-            QTabWidget::pane {
-                border: none;
-                background: transparent;
-            }
-            QTabBar::tab {
-                background: #3a0ca3;
-                color: light grey;
-                padding: 6px 25px;
-                min-width: 100px;
-                font-weight: bold;
-                font-size: 12px;
-                border-top-left-radius: 4px;
-                border-top-right-radius: 4px;
-            }
-            QTabBar::tab:selected {
-                background: #7209b7;
-            }
-            QTabBar::tab:hover {
-                background: #560bad;
-            }
-        """)
-# ➡ Frequency Display (absolute positioning, cyan digits, digital style)
-
-        self.freq_display = FrequencyDisplayLabel(self, self.main_tab, self.adjust_frequency)
-        self.freq_display.setGeometry(700, 210, 450, 140)
-        freq_font = QFont("Digital-7 Mono", 48, QFont.Bold)
+        # ========== FREQUENCY DISPLAY GROUP (right side) ==========
+        freq_group = QGroupBox("📻 Frequency", self.main_tab)
+        freq_group.setGeometry(620, 10, 560, 160)
+        freq_group.setStyleSheet(groupbox_style)
+        
+        self.freq_display = FrequencyDisplayLabel(self, freq_group, self.adjust_frequency)
+        self.freq_display.setGeometry(15, 30, 460, 115)
+        freq_font = QFont("Digital-7 Mono", 52, QFont.Bold)
         self.freq_display.setFont(freq_font)
         self.freq_display.setStyleSheet("""
-        color: cyan;
-        background-color: transparent;
-        border: 2px solid cyan;
+            color: #64b5f6;
+            background-color: #0a1929;
+            border: 2px solid #1e3a5f;
+            border-radius: 10px;
         """)
         self.freq_display.setAlignment(Qt.AlignCenter)
 
-
-
-# ➕ Add memory channel step buttons (+/-)
-        self.mem_plus_btn = QPushButton("+", self.main_tab)
-        self.mem_plus_btn.setGeometry(700, 400, 40, 60)
-        self.mem_plus_btn.setStyleSheet("background-color: #4cc9f0; font-weight: bold; font-size: 20px;")
+        # +/- buttons inside freq group
+        self.mem_plus_btn = QPushButton("+", freq_group)
+        self.mem_plus_btn.setGeometry(490, 30, 50, 52)
+        self.mem_plus_btn.setStyleSheet("background-color: #1976d2; color: white; font-weight: bold; font-size: 24px; border-radius: 8px; border: 2px solid #42a5f5;")
         self.mem_plus_btn.clicked.connect(lambda: self.change_memory_channel(1))
 
-
-        self.mem_minus_btn = QPushButton("-", self.main_tab)
-        self.mem_minus_btn.setGeometry(700, 480, 40, 60)
-        self.mem_minus_btn.setStyleSheet("background-color: #4cc9f0; font-weight: bold; font-size: 20px;")
+        self.mem_minus_btn = QPushButton("-", freq_group)
+        self.mem_minus_btn.setGeometry(490, 90, 50, 52)
+        self.mem_minus_btn.setStyleSheet("background-color: #1976d2; color: white; font-weight: bold; font-size: 24px; border-radius: 8px; border: 2px solid #42a5f5;")
         self.mem_minus_btn.clicked.connect(lambda: self.change_memory_channel(-1))
 
+        # ========== SIMPLEX FREQUENCIES GROUP ==========
+        simplex_group = QGroupBox("📡 Simplex Frequencies", self.main_tab)
+        simplex_group.setGeometry(15, 180, 490, 80)
+        simplex_group.setStyleSheet(groupbox_style)
 
+        btn_style_cyan = """
+            QPushButton {
+                background-color: #0277bd; color: white; font-weight: bold;
+                border-radius: 6px; font-size: 10px; border: 1px solid #0288d1;
+            }
+            QPushButton:hover { background-color: #0288d1; }
+        """
+
+        self.btn_mem_059 = QPushButton("144.420 M059", simplex_group)
+        self.btn_mem_059.setGeometry(10, 35, 110, 32)
+        self.btn_mem_059.setStyleSheet(btn_style_cyan)
+        self.btn_mem_059.clicked.connect(lambda: self.recall_memory_channel("059"))
+
+        self.btn_mem_060 = QPushButton("446.000 M060", simplex_group)
+        self.btn_mem_060.setGeometry(125, 35, 110, 32)
+        self.btn_mem_060.setStyleSheet(btn_style_cyan)
+        self.btn_mem_060.clicked.connect(lambda: self.recall_memory_channel("060"))
+
+        self.btn_mem_061 = QPushButton("145.600 M061", simplex_group)
+        self.btn_mem_061.setGeometry(240, 35, 110, 32)
+        self.btn_mem_061.setStyleSheet(btn_style_cyan)
+        self.btn_mem_061.clicked.connect(lambda: self.recall_memory_channel("061"))
+
+        self.btn_mem_062 = QPushButton("433.500 M062", simplex_group)
+        self.btn_mem_062.setGeometry(355, 35, 110, 32)
+        self.btn_mem_062.setStyleSheet(btn_style_cyan)
+        self.btn_mem_062.clicked.connect(lambda: self.recall_memory_channel("062"))
+
+        # ========== DARN MEMORIES GROUP ==========
+        darn_group = QGroupBox("🔖 DARN Memories", self.main_tab)
+        darn_group.setGeometry(15, 270, 180, 80)
+        darn_group.setStyleSheet(groupbox_style)
+
+        self.btn_mem_darn3 = QPushButton("DARN 3", darn_group)
+        self.btn_mem_darn3.setGeometry(10, 35, 75, 32)
+        self.btn_mem_darn3.setStyleSheet(btn_style_cyan)
+        self.btn_mem_darn3.clicked.connect(lambda: self.recall_memory_channel("004"))
+
+        self.btn_mem_darn2 = QPushButton("DARN 2", darn_group)
+        self.btn_mem_darn2.setGeometry(90, 35, 75, 32)
+        self.btn_mem_darn2.setStyleSheet(btn_style_cyan)
+        self.btn_mem_darn2.clicked.connect(lambda: self.recall_memory_channel("003"))
+
+        # ========== MODE PRESETS GROUP ==========
+        presets_group = QGroupBox("🎛️ Mode Presets", self.main_tab)
+        presets_group.setGeometry(15, 360, 590, 130)
+        presets_group.setStyleSheet(groupbox_style)
+
+        btn_style_blue = """
+            QPushButton {
+                background-color: #1565c0; color: white; font-weight: bold;
+                border-radius: 6px; font-size: 10px; border: 1px solid #1976d2;
+            }
+            QPushButton:hover { background-color: #1976d2; }
+        """
+
+        # Row 1 of presets
+        self.preset_btn_default2 = QPushButton("Mic Simplex", presets_group)
+        self.preset_btn_default2.setGeometry(10, 32, 100, 32)
+        self.preset_btn_default2.setStyleSheet(btn_style_blue)
+        self.preset_btn_default2.clicked.connect(partial(self.activate_default2_memory, "presets/overrides_only.xml"))
+
+        self.preset_btn_mic_default_d3 = QPushButton("Mic DARN3", presets_group)
+        self.preset_btn_mic_default_d3.setGeometry(120, 32, 100, 32)
+        self.preset_btn_mic_default_d3.setStyleSheet(btn_style_blue)
+        self.preset_btn_mic_default_d3.clicked.connect(partial(self.activate_mic_default_d3, "presets/overrides_only.xml"))
+
+        self.preset_btn_aprs_m059 = QPushButton("APRS Simplex", presets_group)
+        self.preset_btn_aprs_m059.setGeometry(230, 32, 100, 32)
+        self.preset_btn_aprs_m059.setStyleSheet(btn_style_blue)
+        self.preset_btn_aprs_m059.clicked.connect(partial(self.activate_aprs_simplex59, "presets/aprs.xml"))
+
+
+
+        # Row 2 of presets
+        self.preset_btn_ft8 = QPushButton("FT8", presets_group)
+        self.preset_btn_ft8.setGeometry(10, 72, 70, 32)
+        self.preset_btn_ft8.setStyleSheet(btn_style_blue)
+        self.preset_btn_ft8.clicked.connect(partial(self.activate_ft8_memory, "presets/FT8settings.xml"))
+
+        self.preset_btn_winlink = QPushButton("Winlink", presets_group)
+        self.preset_btn_winlink.setGeometry(95, 72, 70, 32)
+        self.preset_btn_winlink.setStyleSheet(btn_style_blue)
+        self.preset_btn_winlink.clicked.connect(partial(self.activate_winlink_memory, "presets/WINLINK_APRS.xml"))
+
+        self.varafm_label = QLabel("← VARA FM", presets_group)
+        self.varafm_label.setGeometry(99, 104,80, 18)
+        self.varafm_label.setStyleSheet("color: #90caf9; font-size: 10px;")
+
+        self.preset_btn_aprs = QPushButton("APRS Pin", presets_group)
+        self.preset_btn_aprs.setGeometry(180, 72, 80, 32)
+        self.preset_btn_aprs.setStyleSheet(btn_style_blue)
+        self.preset_btn_aprs.clicked.connect(partial(self.activate_aprs_memory, "presets/aprs.xml"))
+
+        self.preset_btn_ssb = QPushButton("SSB", presets_group)
+        self.preset_btn_ssb.setGeometry(275, 72, 70, 32)
+        self.preset_btn_ssb.setStyleSheet(btn_style_blue)
+        self.preset_btn_ssb.clicked.connect(partial(self.activate_ssb_memory, "presets/SSB_setting.xml"))
+
+        self.preset_btn_wiresx = QPushButton("WIRES-X", presets_group)
+        self.preset_btn_wiresx.setGeometry(360, 72, 80, 32)
+        self.preset_btn_wiresx.setStyleSheet(btn_style_blue)
+        self.preset_btn_wiresx.clicked.connect(partial(self.activate_wiresx_memory, "presets/wiresx.xml"))
+
+        self.preset_btn_default = QPushButton("⚙️ Default", presets_group)
+        self.preset_btn_default.setGeometry(455, 72, 90, 32)
+        self.preset_btn_default.setStyleSheet("""
+            QPushButton {
+                background-color: #455a64; color: white; font-weight: bold;
+                border-radius: 6px; font-size: 10px; border: 1px solid #607d8b;
+            }
+            QPushButton:hover { background-color: #546e7a; }
+        """)
+        self.preset_btn_default.clicked.connect(partial(self.activate_default_memory, "presets/defaultv002.xml"))
+
+        # ========== FILE OPERATIONS GROUP ==========
+        file_group = QGroupBox("📁 File Operations", self.main_tab)
+        file_group.setGeometry(15, 550, 490, 85)
+        file_group.setStyleSheet(groupbox_style)
+
+        self.save_btn = QPushButton("📥 Download From Radio", file_group)
+        self.save_btn.setGeometry(15, 35, 220, 38)
+        self.save_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #2e7d32; color: white; font-weight: bold;
+                border-radius: 6px; font-size: 12px; border: 2px solid #4caf50;
+            }
+            QPushButton:hover { background-color: #43a047; }
+        """)
+        self.save_btn.clicked.connect(self.load_all_menus)
+
+        self.load_btn = QPushButton("📤 Load File to Radio", file_group)
+        self.load_btn.setGeometry(250, 35, 220, 38)
+        self.load_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #c62828; color: white; font-weight: bold;
+                border-radius: 6px; font-size: 12px; border: 2px solid #ef5350;
+            }
+            QPushButton:hover { background-color: #e53935; }
+        """)
+        self.load_btn.clicked.connect(self.select_and_load_file)
+
+        # ========== LOG DISPLAY GROUP (right side, aligned with Frequency) ==========
+        log_group = QGroupBox("📝 Activity Log", self.main_tab)
+        log_group.setGeometry(620, 180, 560, 370)
+        log_group.setStyleSheet(groupbox_style)
+        
+        self.text_display = QTextEdit(log_group)
+        self.text_display.setGeometry(15, 30, 530, 325)
+        self.text_display.setReadOnly(True)
+        self.text_display.setStyleSheet("background-color: #0a1628; color: #7fff7f; font-family: Consolas; font-size: 11px; border: 1px solid #1e3a5f; border-radius: 6px;")
+
+        # ========== STATUS & PROGRESS ==========
+        self.status_label = QLabel("Ready - Configure COM port in Settings tab", self.main_tab)
+        self.status_label.setGeometry(15, 685, 300, 28)
+        self.status_label.setStyleSheet("color: #ffd54f; font-weight: bold; font-size: 13px;")
+
+        self.progress_bar = QProgressBar(self.main_tab)
+        self.progress_bar.setGeometry(15, 660, 490, 25)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setStyleSheet("""
+            QProgressBar {
+                border: 2px solid #1e3a5f; border-radius: 6px;
+                background: #0a1929; color: #a0c4ff; text-align: center; font-size: 11px;
+            }
+            QProgressBar::chunk {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #1976d2, stop:0.5 #42a5f5, stop:1 #1976d2);
+                border-radius: 4px;
+            }
+        """)
 
 # ➡ Timer for live frequency polling
         self.freq_timer = QTimer(self)
@@ -895,9 +860,26 @@ class FT991AController(QWidget):
         self.ssb_sliders = {}
         self.ssb_toggles = {}
 
-        ssb_filter_group = QGroupBox("SSB Filters", self.main_tab)
-        ssb_filter_group.setGeometry(20, 620, 1160, 300)
-        ssb_filter_group.setStyleSheet("QGroupBox { color: white; font-weight: bold; font-size: 14px; border: 1px solid #80ff80; margin-top: 10px; } QGroupBox:title { subcontrol-origin: margin; subcontrol-position: top left; padding: 0 3px; }")
+        ssb_filter_group = QGroupBox("🎚️ SSB Filters", self.main_tab)
+        ssb_filter_group.setGeometry(20, 800, 1060, 320)
+        ssb_filter_group.setStyleSheet("""
+            QGroupBox {
+                color: #a0c4ff;
+                font-weight: bold;
+                font-size: 13px;
+                border: 2px solid #1e3a5f;
+                border-radius: 10px;
+                margin-top: 12px;
+                padding-top: 10px;
+                background: #0d2137;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 15px;
+                padding: 0 10px;
+                background: #0d2137;
+            }
+        """)
 
         grid = QGridLayout()
         grid.setVerticalSpacing(20)
@@ -912,11 +894,11 @@ class FT991AController(QWidget):
             if show_toggle:
                 toggle = QCheckBox("ON")
                 toggle.setChecked(True)
-                toggle.setStyleSheet("color: lightgreen")
+                toggle.setStyleSheet("color: #64b5f6")
                 self.ssb_toggles[label] = toggle
 
             lbl = QLabel(label)
-            lbl.setStyleSheet("color: white")
+            lbl.setStyleSheet("color: #a0c4ff")
             if tooltip:
                 lbl.setToolTip(tooltip)
 
@@ -928,10 +910,10 @@ class FT991AController(QWidget):
             self.ssb_sliders[label] = slider
 
             value_lbl = QLabel(str(default))
-            value_lbl.setStyleSheet("color: white; min-width: 40px")
+            value_lbl.setStyleSheet("color: #ffd54f; min-width: 40px")
 
             unit_lbl = QLabel(unit)
-            unit_lbl.setStyleSheet("color: white")
+            unit_lbl.setStyleSheet("color: #a0c4ff")
 
             def update_display_and_send(val):
                 freq = val * 10
@@ -1008,9 +990,12 @@ class FT991AController(QWidget):
 
         self.cat_response_display = QTextEdit()
         self.cat_response_display.setReadOnly(True)
-        self.cat_response_display.setStyleSheet("background-color: #1e1e1e; color: #90ee90; font-family: Consolas;")
+        self.cat_response_display.setStyleSheet("background-color: #0a1628; color: #7fff7f; font-family: Consolas; border: 1px solid #1e3a5f; border-radius: 6px;")
         cat_layout.addWidget(self.cat_response_display)
         self.cat_tab.setLayout(cat_layout)
+        
+        # Load saved settings (now that all UI is built)
+        self.load_settings()
 
 ##############################################################################
 ################################# FUNCTIONS ##################################
@@ -1342,7 +1327,7 @@ class FT991AController(QWidget):
 
 
             # 5) UI updates
-            port = self.com_selector.currentText()
+            port = self.settings_cat_combo.currentText()
             nice = f"📡 Winlink {(f'{actual:03d}' if actual else '???')}"
             if tag:
                 nice += f" — {tag}"
@@ -1826,26 +1811,62 @@ class FT991AController(QWidget):
 
 
     def connect_to_radio(self):
-        port = self.com_selector.currentText()
+        port = self.settings_cat_combo.currentText()
+        
+        if not port:
+            QMessageBox.warning(self, "Warning", "No COM port selected. Go to Settings tab to configure.")
+            return
+        
+        # Get baud rate from settings
+        try:
+            baud = int(self.settings_baud_combo.currentText())
+        except:
+            baud = 38400
+        
+        # Get RTS/DTR modes from settings
+        rts_mode = self.settings_rts_combo.currentText() if hasattr(self, 'settings_rts_combo') else "On"
+        dtr_mode = self.settings_dtr_combo.currentText() if hasattr(self, 'settings_dtr_combo') else "Off"
+        
         try:
             self.serial_conn = serial.Serial(
                 port=port,
-                baudrate=38400,
+                baudrate=baud,
                 timeout=1,
                 rtscts=False,
                 dsrdtr=False,
                 write_timeout=1
             )
 
-            # Explicit modem-line state you want:
-            self.serial_conn.setDTR(False)   # DTR OFF
-            self.serial_conn.setRTS(True)    # RTS ON
+            # Set DTR based on settings
+            if dtr_mode == "Off":
+                self.serial_conn.setDTR(False)
+            elif dtr_mode == "On":
+                self.serial_conn.setDTR(True)
+            elif dtr_mode == "High=TX":
+                self.serial_conn.setDTR(False)  # Low when not TX
+            elif dtr_mode == "Low=TX":
+                self.serial_conn.setDTR(True)   # High when not TX
+            
+            # Set RTS based on settings
+            if rts_mode == "Off":
+                self.serial_conn.setRTS(False)
+            elif rts_mode == "On":
+                self.serial_conn.setRTS(True)
+            elif rts_mode == "High=TX":
+                self.serial_conn.setRTS(False)  # Low when not TX
+            elif rts_mode == "Low=TX":
+                self.serial_conn.setRTS(True)   # High when not TX
 
             # Flush buffers after line-state change
             self.serial_conn.reset_input_buffer()
             self.serial_conn.reset_output_buffer()
+            
+            dtr_state = "ON" if self.serial_conn.dtr else "OFF"
+            rts_state = "ON" if self.serial_conn.rts else "OFF"
 
-            self.status_label.setText(f"Connected to {port} (DTR=OFF, RTS=ON)")
+            self.status_label.setText(f"Connected to {port} (DTR={dtr_state}, RTS={rts_state})")
+            self.status_label.setStyleSheet("color: #7fff7f; font-weight: bold; padding: 4px;")
+            self.text_display.append(f"✅ Connected to {port} @ {baud} baud (DTR={dtr_state}, RTS={rts_state})")
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Unable to open {port}: {e}")
 
@@ -2283,7 +2304,7 @@ class FT991AController(QWidget):
 
 
     def select_and_load_file(self):
-        filename, _ = QFileDialog.getOpenFileName(self, "Load XML Preset File", "", "XML Files (*.xml)")
+        filename, _ = QFileDialog.getOpenFileName(self, "Load XML Preset File", "presets", "XML Files (*.xml)")
         if filename:
             self._apply_settings_from_file(filename)
 
@@ -2387,18 +2408,23 @@ class FT991AController(QWidget):
         if self.serial_conn and self.serial_conn.is_open:
             self.serial_conn.close()
             self.serial_conn = None
-            self.connect_btn.setStyleSheet("QPushButton { background-color: white; color: black; font-weight: bold; }")
-            self.status_label.setStyleSheet("color: orange; font-weight: bold; padding: 4px;")
-            self.status_label.setText("Disconnected")
-            self.connect_btn.setText("Connect")
-            self.disconnect_btn.setStyleSheet("""
+            # Reset connect button to default green style
+            self.connect_btn.setStyleSheet("""
                 QPushButton {
-                    background-color: rgb(255, 60, 60);
+                    background-color: #2e7d32;
                     color: white;
                     font-weight: bold;
+                    border-radius: 6px;
+                    padding: 6px;
+                    border: 1px solid #4caf50;
                 }
-                """)
-            self.disconnect_btn.setStyleSheet("QPushButton { background-color: rgb(255, 85, 85); color: white; font-weight: bold; }")
+                QPushButton:hover {
+                    background-color: #43a047;
+                }
+            """)
+            self.status_label.setStyleSheet("color: #ffd54f; font-weight: bold; padding: 4px;")
+            self.status_label.setText("Disconnected")
+            self.text_display.append("🔌 Disconnected from radio")
 
     
     ### V/M mode      
@@ -2511,7 +2537,7 @@ class FT991AController(QWidget):
         self._apply_settings_from_file(filename)
 
     def load_preset_from_file(self):
-        filename, _ = QFileDialog.getOpenFileName(self, "Load XML Preset File", "", "XML Files (*.xml)")
+        filename, _ = QFileDialog.getOpenFileName(self, "Load XML Preset File", "presets", "XML Files (*.xml)")
         if filename:
             self._apply_settings_from_file(filename)
 
@@ -2553,7 +2579,7 @@ class FT991AController(QWidget):
             self.status_label.setText("Not connected")
             return
 
-        filename, _ = QFileDialog.getSaveFileName(self, "Save Radio Settings", "radio_preset.xml", "XML Files (*.xml)")
+        filename, _ = QFileDialog.getSaveFileName(self, "Save Radio Settings", "presets/radio_preset.xml", "XML Files (*.xml)")
         if not filename:
             return
 
@@ -2592,32 +2618,442 @@ class FT991AController(QWidget):
         self.text_display.append(f"📁 Settings saved to: {filename}\n")
         self.status_label.setText("Radio settings saved to file")
 
+    def _build_settings_tab(self):
+        """Build the Settings tab with serial port configuration"""
+        layout = QVBoxLayout(self.settings_tab)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(15)
+        
+        # Serial Port Settings Group
+        serial_group = QGroupBox("📡 Serial Port Settings")
+        serial_group.setStyleSheet("""
+            QGroupBox {
+                color: #a0c4ff;
+                font-weight: bold;
+                font-size: 14px;
+                border: 1px solid #1e3a5f;
+                border-radius: 10px;
+                margin-top: 10px;
+                padding-top: 15px;
+                background: #0d2137;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 15px;
+                padding: 0 8px;
+                background: #0d2137;
+            }
+        """)
+        serial_layout = QGridLayout(serial_group)
+        serial_layout.setSpacing(10)
+        
+        # CAT Port
+        cat_label = QLabel("CAT Port:")
+        cat_label.setStyleSheet("color: #a0c4ff;")
+        serial_layout.addWidget(cat_label, 0, 0)
+        
+        self.settings_cat_combo = QComboBox()
+        self._populate_com_ports(self.settings_cat_combo)
+        serial_layout.addWidget(self.settings_cat_combo, 0, 1)
+        
+        # Baud Rate
+        baud_label = QLabel("Baud Rate:")
+        baud_label.setStyleSheet("color: #a0c4ff;")
+        serial_layout.addWidget(baud_label, 1, 0)
+        
+        self.settings_baud_combo = QComboBox()
+        self.settings_baud_combo.addItems(["4800", "9600", "19200", "38400"])
+        self.settings_baud_combo.setCurrentText("38400")
+        serial_layout.addWidget(self.settings_baud_combo, 1, 1)
+        
+        # RTS Mode
+        rts_label = QLabel("RTS Mode:")
+        rts_label.setStyleSheet("color: #a0c4ff;")
+        serial_layout.addWidget(rts_label, 2, 0)
+        
+        self.settings_rts_combo = QComboBox()
+        self.settings_rts_combo.addItems(["Off", "On", "High=TX", "Low=TX"])
+        self.settings_rts_combo.setCurrentText("On")
+        serial_layout.addWidget(self.settings_rts_combo, 2, 1)
+        
+        # DTR Mode
+        dtr_label = QLabel("DTR Mode:")
+        dtr_label.setStyleSheet("color: #a0c4ff;")
+        serial_layout.addWidget(dtr_label, 3, 0)
+        
+        self.settings_dtr_combo = QComboBox()
+        self.settings_dtr_combo.addItems(["Off", "On", "High=TX", "Low=TX"])
+        self.settings_dtr_combo.setCurrentText("Off")
+        serial_layout.addWidget(self.settings_dtr_combo, 3, 1)
+        
+        # Refresh ports button
+        refresh_btn = QPushButton("🔄 Refresh Ports")
+        refresh_btn.clicked.connect(self._refresh_com_ports)
+        serial_layout.addWidget(refresh_btn, 4, 0, 1, 2)
+        
+        layout.addWidget(serial_group)
+        
+        # Default Preset Paths Group
+        paths_group = QGroupBox("📂 Preset File Paths")
+        paths_group.setStyleSheet(serial_group.styleSheet())
+        paths_layout = QGridLayout(paths_group)
+        paths_layout.setSpacing(10)
+        
+        # Default COM port setting
+        default_com_label = QLabel("Default COM Port:")
+        default_com_label.setStyleSheet("color: #a0c4ff;")
+        paths_layout.addWidget(default_com_label, 0, 0)
+        
+        self.settings_default_com = QLineEdit()
+        self.settings_default_com.setPlaceholderText("COM11")
+        self.settings_default_com.setText("COM11")
+        paths_layout.addWidget(self.settings_default_com, 0, 1)
+        
+        layout.addWidget(paths_group)
+        
+        # Save/Load buttons
+        btn_layout = QHBoxLayout()
+        
+        save_btn = QPushButton("💾 Save Settings")
+        save_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #2e7d32;
+                color: white;
+                font-weight: bold;
+                border-radius: 6px;
+                padding: 10px 20px;
+                border: 1px solid #4caf50;
+            }
+            QPushButton:hover {
+                background-color: #43a047;
+            }
+        """)
+        save_btn.clicked.connect(self.save_settings)
+        btn_layout.addWidget(save_btn)
+        
+        load_btn = QPushButton("📂 Load Settings")
+        load_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #1565c0;
+                color: white;
+                font-weight: bold;
+                border-radius: 6px;
+                padding: 10px 20px;
+                border: 1px solid #1976d2;
+            }
+            QPushButton:hover {
+                background-color: #1976d2;
+            }
+        """)
+        load_btn.clicked.connect(self.load_settings)
+        btn_layout.addWidget(load_btn)
+        
+        layout.addLayout(btn_layout)
+        
+        # Status label for settings
+        self.settings_status = QLabel("Settings loaded from kat_settings.json")
+        self.settings_status.setStyleSheet("color: #7fff7f; font-style: italic;")
+        layout.addWidget(self.settings_status)
+        
+        # Spacer
+        layout.addStretch()
+    
+    def _populate_com_ports(self, combo):
+        """Populate a combo box with available COM ports"""
+        combo.clear()
+        ports = [port.device for port in serial.tools.list_ports.comports()]
+        combo.addItems(ports)
+        if "COM11" in ports:
+            combo.setCurrentText("COM11")
+    
+    def _refresh_com_ports(self):
+        """Refresh all COM port combo boxes"""
+        self._populate_com_ports(self.settings_cat_combo)
+        self.settings_status.setText("🔄 COM ports refreshed")
+        self.settings_status.setStyleSheet("color: #64b5f6;")
+    
+    def save_settings(self):
+        """Save settings to JSON file"""
+        settings = {
+            "cat_port": self.settings_cat_combo.currentText(),
+            "baud_rate": self.settings_baud_combo.currentText(),
+            "rts_mode": self.settings_rts_combo.currentText(),
+            "dtr_mode": self.settings_dtr_combo.currentText(),
+            "default_com": self.settings_default_com.text(),
+        }
+        try:
+            with open(SETTINGS_FILE, "w") as f:
+                json.dump(settings, f, indent=2)
+            self.settings_status.setText(f"💾 Settings saved to {SETTINGS_FILE.name}")
+            self.settings_status.setStyleSheet("color: #7fff7f;")
+            self.text_display.append(f"💾 Settings saved to {SETTINGS_FILE.name}")
+        except Exception as e:
+            self.settings_status.setText(f"❌ Failed to save: {e}")
+            self.settings_status.setStyleSheet("color: #ff6b6b;")
+    
+    def load_settings(self):
+        """Load settings from JSON file"""
+        if not SETTINGS_FILE.exists():
+            self.settings_status.setText("No settings file found - using defaults")
+            self.settings_status.setStyleSheet("color: #ffd54f;")
+            return
+        
+        try:
+            with open(SETTINGS_FILE, "r") as f:
+                settings = json.load(f)
+            
+            # Apply settings
+            if "cat_port" in settings:
+                idx = self.settings_cat_combo.findText(settings["cat_port"])
+                if idx >= 0:
+                    self.settings_cat_combo.setCurrentIndex(idx)
+            
+            if "baud_rate" in settings:
+                self.settings_baud_combo.setCurrentText(settings["baud_rate"])
+            
+            if "rts_mode" in settings:
+                self.settings_rts_combo.setCurrentText(settings["rts_mode"])
+            
+            if "dtr_mode" in settings:
+                self.settings_dtr_combo.setCurrentText(settings["dtr_mode"])
+            
+            if "default_com" in settings:
+                self.settings_default_com.setText(settings["default_com"])
+            
+            self.settings_status.setText(f"✅ Settings loaded from {SETTINGS_FILE.name}")
+            self.settings_status.setStyleSheet("color: #7fff7f;")
+            
+        except Exception as e:
+            self.settings_status.setText(f"❌ Failed to load: {e}")
+            self.settings_status.setStyleSheet("color: #ff6b6b;")
+
 if __name__ == '__main__':
     from PyQt5.QtWidgets import QApplication, QStyleFactory
     from PyQt5.QtGui import QPalette, QColor
     from PyQt5.QtCore import Qt
 
-    app = QApplication(sys.argv)  # ✅ Create app first
-    app.setStyle(QStyleFactory.create('Fusion'))  # ✅ Then set style
+    app = QApplication(sys.argv)
+    app.setStyle(QStyleFactory.create('Fusion'))
 
-    # Set dark palette
+    # PyTNC Pro style dark palette
     dark_palette = QPalette()
-    dark_palette.setColor(QPalette.Window, QColor(33, 66, 109))
-    dark_palette.setColor(QPalette.WindowText, Qt.white)
-    dark_palette.setColor(QPalette.Base, QColor(25, 25, 25))
-    dark_palette.setColor(QPalette.AlternateBase, QColor(53, 53, 53))
-    dark_palette.setColor(QPalette.ToolTipBase, Qt.white)
-    dark_palette.setColor(QPalette.ToolTipText, Qt.white)
-    dark_palette.setColor(QPalette.Text, Qt.white)
-    dark_palette.setColor(QPalette.Button, QColor(53, 53, 53))
-    dark_palette.setColor(QPalette.ButtonText, Qt.white)
-    dark_palette.setColor(QPalette.BrightText, Qt.red)
-    dark_palette.setColor(QPalette.Highlight, QColor(142, 45, 197).lighter())
-    dark_palette.setColor(QPalette.HighlightedText, Qt.black)
+    dark_palette.setColor(QPalette.Window, QColor(13, 33, 55))  # #0d2137
+    dark_palette.setColor(QPalette.WindowText, QColor(160, 196, 255))  # #a0c4ff
+    dark_palette.setColor(QPalette.Base, QColor(10, 25, 40))  # #0a1929
+    dark_palette.setColor(QPalette.AlternateBase, QColor(13, 33, 55))
+    dark_palette.setColor(QPalette.ToolTipBase, QColor(13, 33, 55))
+    dark_palette.setColor(QPalette.ToolTipText, QColor(160, 196, 255))
+    dark_palette.setColor(QPalette.Text, QColor(160, 196, 255))
+    dark_palette.setColor(QPalette.Button, QColor(26, 58, 92))  # #1a3a5c
+    dark_palette.setColor(QPalette.ButtonText, QColor(255, 255, 255))
+    dark_palette.setColor(QPalette.BrightText, QColor(255, 213, 79))  # #ffd54f
+    dark_palette.setColor(QPalette.Highlight, QColor(66, 165, 245))  # #42a5f5
+    dark_palette.setColor(QPalette.HighlightedText, Qt.white)
     app.setPalette(dark_palette)
+
+    # Global stylesheet - PyTNC Pro style
+    app.setStyleSheet("""
+        QMainWindow, QWidget {
+            background: #0d2137;
+            color: #a0c4ff;
+            font-family: 'Segoe UI', 'Consolas', monospace;
+        }
+        
+        QGroupBox {
+            color: #a0c4ff;
+            font-weight: bold;
+            border: 1px solid #1e3a5f;
+            border-radius: 10px;
+            margin-top: 10px;
+            padding-top: 10px;
+            background: #0d2137;
+        }
+        QGroupBox::title {
+            subcontrol-origin: margin;
+            left: 15px;
+            padding: 0 8px;
+            background: #0d2137;
+        }
+        
+        QPushButton {
+            background: #1a3a5c;
+            color: #a0c4ff;
+            border: 1px solid #2a5a8a;
+            border-radius: 6px;
+            padding: 8px 16px;
+            font-weight: bold;
+        }
+        QPushButton:hover {
+            background: #2a5a8a;
+            border-color: #42a5f5;
+        }
+        QPushButton:pressed {
+            background: #0d2137;
+        }
+        QPushButton:disabled {
+            background: #152a40;
+            color: #607d8b;
+            border-color: #1e3a5f;
+        }
+        
+        QComboBox {
+            background: #0a1929;
+            color: #a0c4ff;
+            border: 1px solid #1e3a5f;
+            border-radius: 4px;
+            padding: 5px 10px;
+        }
+        QComboBox:hover {
+            border-color: #42a5f5;
+        }
+        QComboBox::drop-down {
+            border: none;
+            width: 20px;
+        }
+        QComboBox QAbstractItemView {
+            background: #0a1929;
+            color: #a0c4ff;
+            selection-background-color: #1a3a5c;
+            border: 1px solid #1e3a5f;
+        }
+        
+        QTextEdit {
+            background: #0a1628;
+            color: #7fff7f;
+            border: 1px solid #1e3a5f;
+            border-radius: 6px;
+            padding: 8px;
+            font-family: 'Consolas', monospace;
+            font-size: 11px;
+        }
+        
+        QLabel {
+            color: #a0c4ff;
+        }
+        
+        QTabWidget::pane {
+            border: 1px solid #1e3a5f;
+            background: #0d2137;
+            border-radius: 6px;
+        }
+        QTabBar::tab {
+            background: #0d2137;
+            color: #607d8b;
+            padding: 8px 20px;
+            margin-right: 2px;
+            border-top-left-radius: 6px;
+            border-top-right-radius: 6px;
+            font-weight: bold;
+        }
+        QTabBar::tab:selected {
+            background: #1a3a5c;
+            color: #64b5f6;
+            border-bottom: 2px solid #42a5f5;
+        }
+        QTabBar::tab:hover:!selected {
+            background: #152a40;
+            color: #90caf9;
+        }
+        
+        QProgressBar {
+            border: 1px solid #1e3a5f;
+            border-radius: 4px;
+            background: #0a1929;
+            color: #a0c4ff;
+            text-align: center;
+        }
+        QProgressBar::chunk {
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                stop:0 #1976d2, stop:0.5 #42a5f5, stop:1 #1976d2);
+            border-radius: 3px;
+        }
+        
+        QSlider::groove:horizontal {
+            border: 1px solid #1e3a5f;
+            height: 6px;
+            background: #0a1929;
+            border-radius: 3px;
+        }
+        QSlider::handle:horizontal {
+            background: #42a5f5;
+            border: 1px solid #1976d2;
+            width: 14px;
+            margin: -4px 0;
+            border-radius: 7px;
+        }
+        QSlider::handle:horizontal:hover {
+            background: #64b5f6;
+        }
+        QSlider::sub-page:horizontal {
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                stop:0 #1976d2, stop:1 #42a5f5);
+            border-radius: 3px;
+        }
+        
+        QCheckBox {
+            color: #a0c4ff;
+            spacing: 8px;
+        }
+        QCheckBox::indicator {
+            width: 16px;
+            height: 16px;
+            border-radius: 3px;
+            border: 1px solid #1e3a5f;
+            background: #0a1929;
+        }
+        QCheckBox::indicator:checked {
+            background: #42a5f5;
+            border-color: #1976d2;
+        }
+        
+        QLineEdit, QSpinBox {
+            background: #0a1929;
+            color: #a0c4ff;
+            border: 1px solid #1e3a5f;
+            border-radius: 4px;
+            padding: 5px;
+        }
+        QLineEdit:focus, QSpinBox:focus {
+            border-color: #42a5f5;
+        }
+        
+        QScrollBar:vertical {
+            background: #0a1929;
+            width: 12px;
+            border-radius: 6px;
+        }
+        QScrollBar::handle:vertical {
+            background: #1a3a5c;
+            border-radius: 6px;
+            min-height: 20px;
+        }
+        QScrollBar::handle:vertical:hover {
+            background: #2a5a8a;
+        }
+        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+            height: 0px;
+        }
+        
+        QScrollBar:horizontal {
+            background: #0a1929;
+            height: 12px;
+            border-radius: 6px;
+        }
+        QScrollBar::handle:horizontal {
+            background: #1a3a5c;
+            border-radius: 6px;
+            min-width: 20px;
+        }
+        QScrollBar::handle:horizontal:hover {
+            background: #2a5a8a;
+        }
+        QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+            width: 0px;
+        }
+    """)
 
     # Launch GUI
     gui = FT991AController()
+    gui.setWindowTitle("KAT - FT-991A Controller")
     gui.show()
     sys.exit(app.exec_())
-
