@@ -531,12 +531,17 @@ class FT991AController(QWidget):
         self.main_tab = QWidget()
         self.cat_tab = QWidget()
         self.settings_tab = QWidget()
+        self.info_tab = QWidget()
         self.tabs.addTab(self.main_tab, "📻 Menu Reader")
         self.tabs.addTab(self.cat_tab, "🖥️ CAT Terminal")
         self.tabs.addTab(self.settings_tab, "⚙️ Settings")
+        self.tabs.addTab(self.info_tab, "ℹ️ Info")
         
         # Build settings tab
         self._build_settings_tab()
+        
+        # Build info tab
+        self._build_info_tab()
 
 
 ##gradient
@@ -645,8 +650,8 @@ class FT991AController(QWidget):
         freq_group.setStyleSheet(groupbox_style)
         
         self.freq_display = FrequencyDisplayLabel(self, freq_group, self.adjust_frequency)
-        self.freq_display.setGeometry(15, 30, 460, 115)
-        freq_font = QFont("Digital-7 Mono", 52, QFont.Bold)
+        self.freq_display.setGeometry(15, 25, 460, 70)
+        freq_font = QFont("Digital-7 Mono", 38, QFont.Bold)
         self.freq_display.setFont(freq_font)
         self.freq_display.setStyleSheet("""
             color: #64b5f6;
@@ -656,14 +661,28 @@ class FT991AController(QWidget):
         """)
         self.freq_display.setAlignment(Qt.AlignCenter)
 
+        # Channel info label (shows memory channel number and tag/name)
+        self.channel_info_label = QLabel("", freq_group)
+        self.channel_info_label.setGeometry(15, 100, 460, 28)
+        self.channel_info_label.setStyleSheet("""
+            color: #ffd54f;
+            background-color: #0a1929;
+            border: 1px solid #1e3a5f;
+            border-radius: 5px;
+            padding-left: 8px;
+            font-size: 14px;
+            font-weight: bold;
+        """)
+        self.channel_info_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+
         # +/- buttons inside freq group
         self.mem_plus_btn = QPushButton("+", freq_group)
-        self.mem_plus_btn.setGeometry(490, 30, 50, 52)
+        self.mem_plus_btn.setGeometry(490, 25, 50, 48)
         self.mem_plus_btn.setStyleSheet("background-color: #1976d2; color: white; font-weight: bold; font-size: 24px; border-radius: 8px; border: 2px solid #42a5f5;")
         self.mem_plus_btn.clicked.connect(lambda: self.change_memory_channel(1))
 
         self.mem_minus_btn = QPushButton("-", freq_group)
-        self.mem_minus_btn.setGeometry(490, 90, 50, 52)
+        self.mem_minus_btn.setGeometry(490, 80, 50, 48)
         self.mem_minus_btn.setStyleSheet("background-color: #1976d2; color: white; font-weight: bold; font-size: 24px; border-radius: 8px; border: 2px solid #42a5f5;")
         self.mem_minus_btn.clicked.connect(lambda: self.change_memory_channel(-1))
 
@@ -758,7 +777,7 @@ class FT991AController(QWidget):
         self.preset_btn_winlink.clicked.connect(partial(self.activate_winlink_memory, "presets/WINLINK_APRS.xml"))
 
         self.varafm_label = QLabel("← VARA FM", presets_group)
-        self.varafm_label.setGeometry(99, 104,80, 18)
+        self.varafm_label.setGeometry(99, 104, 80, 18)
         self.varafm_label.setStyleSheet("color: #90caf9; font-size: 10px;")
 
         self.preset_btn_aprs = QPushButton("APRS Pin", presets_group)
@@ -848,6 +867,11 @@ class FT991AController(QWidget):
         self.freq_timer = QTimer(self)
         self.freq_timer.timeout.connect(self.update_frequency_display)
         self.freq_timer.start(500)
+
+# ➡ Timer for channel info polling (slower - every 2 seconds)
+        self.channel_info_timer = QTimer(self)
+        self.channel_info_timer.timeout.connect(self.update_channel_info_display)
+        self.channel_info_timer.start(2000)
 
 
 
@@ -1223,6 +1247,133 @@ class FT991AController(QWidget):
             return self._clip_rig_range(hz)
         except Exception:
             return None
+
+    def _read_memory_channel_info(self):
+        """Query MC; to get current memory channel, then MT; to get the tag/name.
+        Returns tuple (channel_num, tag_string, mode_str) or (None, None, None)."""
+        if not (self.serial_conn and self.serial_conn.is_open):
+            return None, None, None
+        try:
+            # Get current memory channel with MC;
+            self.serial_conn.reset_input_buffer()
+            self.serial_conn.write(b"MC;")
+            mc_resp = self.read_until_semicolon()
+            
+            print(f"[DEBUG channel_info] MC response: {mc_resp}")
+            
+            if not (mc_resp.startswith("MC") and len(mc_resp) >= 6):
+                return None, None, None
+            
+            # MC response: MC001; to MC117; (or MC000; for VFO)
+            channel_str = mc_resp[2:5]
+            
+            try:
+                channel_num = int(channel_str)
+            except ValueError:
+                return None, None, None
+            
+            # If channel 000, we're in VFO mode
+            if channel_num == 0:
+                # Get mode from MD;
+                self.serial_conn.reset_input_buffer()
+                self.serial_conn.write(b"MD0;")
+                md_resp = self.read_until_semicolon()
+                mode_char = md_resp[3] if len(md_resp) >= 5 else '?'
+                mode_map = {
+                    '1': 'LSB', '2': 'USB', '3': 'CW', '4': 'FM', '5': 'AM',
+                    '6': 'RTTY-L', '7': 'CW-R', '8': 'DATA-L', '9': 'RTTY-U',
+                    'A': 'DATA-FM', 'B': 'FM-N', 'C': 'DATA-U', 'D': 'AM-N', 'E': 'C4FM'
+                }
+                mode_str = mode_map.get(mode_char, '?')
+                return None, "VFO Mode", mode_str
+            
+            # Now query MT{channel}; to get the tag and mode
+            time.sleep(0.05)
+            self.serial_conn.reset_input_buffer()
+            self.serial_conn.write(f"MT{channel_num:03d};".encode("ascii"))
+            mt_resp = self.read_until_semicolon()
+            
+            print(f"[DEBUG channel_info] MT response: {mt_resp}")
+            
+            if not (mt_resp.startswith("MT") and len(mt_resp) >= 30):
+                return channel_num, f"CH {channel_num:03d}", "?"
+            
+            # MT response format (after stripping MT and ;):
+            # Pos 0-2: channel (3 digits)
+            # Pos 3-11: frequency (9 digits)
+            # Pos 12-16: clarifier (5 chars with sign)
+            # Pos 17: RX CLAR
+            # Pos 18: TX CLAR
+            # Pos 19: Mode
+            # Pos 20: VFO/Memory
+            # Pos 21: CTCSS
+            # Pos 22-23: Fixed (00)
+            # Pos 24: Shift
+            # Pos 25: Fixed (0)
+            # Pos 26+: TAG (up to 12 chars)
+            mt_payload = mt_resp[2:-1]  # Strip "MT" and ";"
+            
+            # Get mode from position 19
+            mode_char = mt_payload[19] if len(mt_payload) > 19 else '?'
+            mode_map = {
+                '1': 'LSB', '2': 'USB', '3': 'CW', '4': 'FM', '5': 'AM',
+                '6': 'RTTY-L', '7': 'CW-R', '8': 'DATA-L', '9': 'RTTY-U',
+                'A': 'DATA-FM', 'B': 'FM-N', 'C': 'DATA-U', 'D': 'AM-N', 'E': 'C4FM'
+            }
+            mode_str = mode_map.get(mode_char, '?')
+            
+            # Get tag from position 26 onwards
+            tag = ""
+            if len(mt_payload) >= 27:
+                tag = mt_payload[26:].strip()
+            
+            print(f"[DEBUG channel_info] Extracted - channel: {channel_num}, tag: '{tag}', mode: {mode_str}")
+            
+            if tag:
+                return channel_num, tag, mode_str
+            
+            return channel_num, f"CH {channel_num:03d}", mode_str
+            
+        except Exception as e:
+            print(f"[ERROR] Memory channel info read failed: {e}")
+            return None, None, None
+
+    def update_channel_info_display(self):
+        """Update the channel info label with current memory channel and tag."""
+        print("[DEBUG] update_channel_info_display called")
+        
+        if not (self.serial_conn and self.serial_conn.is_open):
+            print("[DEBUG] No serial connection")
+            return
+        try:
+            # Skip if in poll inhibit window
+            if getattr(self, "_poll_inhibit_until", 0) > time.time():
+                print("[DEBUG] In poll inhibit window, skipping")
+                return
+            
+            channel_num, tag, mode_str = self._read_memory_channel_info()
+            
+            print(f"[DEBUG] Got: channel={channel_num}, tag={tag}, mode={mode_str}")
+            
+            if tag is None:
+                info_text = ""
+            elif channel_num is None:
+                # VFO mode
+                info_text = f"📻 {tag}  |  Mode: {mode_str}"
+            else:
+                # Memory mode - show channel number, tag, and mode
+                info_text = f"📍 M{channel_num:03d}: {tag}  |  Mode: {mode_str}"
+            
+            print(f"[DEBUG] Setting label to: {info_text}")
+            
+            # Only update if changed
+            if getattr(self, "_last_channel_info", "") != info_text:
+                self._last_channel_info = info_text
+                self.channel_info_label.setText(info_text)
+                print("[DEBUG] Label updated!")
+                
+        except Exception as e:
+            print(f"[ERROR] Channel info update failed: {e}")
 
     # ### Frequency Display Live Polling
     def update_frequency_display(self):
@@ -1644,6 +1795,7 @@ class FT991AController(QWidget):
             self.text_display.append(f"🔁 {nice}")
 
             QTimer.singleShot(350, self.update_frequency_display)
+            QTimer.singleShot(400, self.update_channel_info_display)
             return found
 
         except Exception as e:
@@ -1867,8 +2019,131 @@ class FT991AController(QWidget):
             self.status_label.setText(f"Connected to {port} (DTR={dtr_state}, RTS={rts_state})")
             self.status_label.setStyleSheet("color: #7fff7f; font-weight: bold; padding: 4px;")
             self.text_display.append(f"✅ Connected to {port} @ {baud} baud (DTR={dtr_state}, RTS={rts_state})")
+            
+            # Start connection health monitor
+            self._start_connection_monitor()
+            
+            # Reset failed response counter
+            self._conn_fail_count = 0
+            
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Unable to open {port}: {e}")
+
+    def _start_connection_monitor(self):
+        """Start a timer to monitor connection health."""
+        if not hasattr(self, '_conn_monitor_timer'):
+            self._conn_monitor_timer = QTimer(self)
+            self._conn_monitor_timer.timeout.connect(self._check_connection_health)
+        self._conn_monitor_timer.start(2000)  # Check every 2 seconds
+        self._conn_fail_count = 0
+
+    def _stop_connection_monitor(self):
+        """Stop the connection health monitor."""
+        if hasattr(self, '_conn_monitor_timer') and self._conn_monitor_timer.isActive():
+            self._conn_monitor_timer.stop()
+
+    def _check_connection_health(self):
+        """Check if the radio connection is still alive."""
+        if not self.serial_conn:
+            self._handle_connection_lost("No serial connection")
+            return
+        
+        try:
+            # Check if port is still open
+            if not self.serial_conn.is_open:
+                self._handle_connection_lost("Serial port closed")
+                return
+            
+            # Try a simple ID query to verify radio is responding
+            # Only do this if we're not in the middle of another operation
+            if time.time() > getattr(self, '_poll_inhibit_until', 0):
+                self.serial_conn.reset_input_buffer()
+                self.serial_conn.write(b"ID;")
+                
+                # Quick timeout read
+                response = b""
+                start = time.time()
+                while time.time() - start < 0.3:  # 300ms timeout
+                    part = self.serial_conn.read(1)
+                    if part:
+                        response += part
+                        if part == b';':
+                            break
+                
+                if response and b'ID' in response:
+                    # Connection is good, reset fail counter
+                    self._conn_fail_count = 0
+                else:
+                    # No response, increment fail counter
+                    self._conn_fail_count = getattr(self, '_conn_fail_count', 0) + 1
+                    
+                    if self._conn_fail_count >= 3:  # 3 consecutive failures
+                        self._handle_connection_lost("Radio not responding")
+                        
+        except serial.SerialException as e:
+            self._handle_connection_lost(f"Serial error: {e}")
+        except Exception as e:
+            self._conn_fail_count = getattr(self, '_conn_fail_count', 0) + 1
+            if self._conn_fail_count >= 3:
+                self._handle_connection_lost(f"Connection error: {e}")
+
+    def _handle_connection_lost(self, reason="Unknown"):
+        """Handle lost connection to radio."""
+        # Stop the monitor to prevent repeated warnings
+        self._stop_connection_monitor()
+        
+        # Stop other pollers
+        self.stop_meter_polling()
+        if hasattr(self, 'freq_timer') and self.freq_timer.isActive():
+            self.freq_timer.stop()
+        if hasattr(self, 'tx_timer') and self.tx_timer.isActive():
+            self.tx_timer.stop()
+        if hasattr(self, 'channel_info_timer') and self.channel_info_timer.isActive():
+            self.channel_info_timer.stop()
+        
+        # Close the serial connection if it exists
+        if self.serial_conn:
+            try:
+                self.serial_conn.close()
+            except:
+                pass
+            self.serial_conn = None
+        
+        # Update UI
+        self.status_label.setText(f"⚠️ CONNECTION LOST: {reason}")
+        self.status_label.setStyleSheet("color: #ff6b6b; font-weight: bold; padding: 4px;")
+        self.text_display.append(f"\n🚨 CONNECTION LOST: {reason}\n")
+        
+        # Reset connect button style
+        self.connect_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #2e7d32;
+                color: white;
+                font-weight: bold;
+                border-radius: 8px;
+                border: 2px solid #4caf50;
+                font-size: 13px;
+            }
+            QPushButton:hover {
+                background-color: #43a047;
+            }
+        """)
+        
+        # Turn off TX LED
+        if hasattr(self, 'tx_led'):
+            self.tx_led.set_on(False)
+        
+        # Clear channel info display
+        if hasattr(self, 'channel_info_label'):
+            self.channel_info_label.setText("")
+            self._last_channel_info = ""
+        
+        # Show warning popup
+        QMessageBox.warning(
+            self, 
+            "Connection Lost", 
+            f"Lost connection to radio!\n\nReason: {reason}\n\nPlease check:\n• Radio is powered on\n• USB cable is connected\n• Correct COM port selected"
+        )
 
 
     def activate_ft8_memory(self, file):
@@ -2056,28 +2331,33 @@ class FT991AController(QWidget):
                 self.tx_led.set_on(False)
             return
 
+        # Skip if we're in poll inhibit window
+        if time.time() < getattr(self, '_poll_inhibit_until', 0):
+            return
+
         try:
             ser = self.serial_conn
 
-            # 1) Preferred: explicit PTT status.
+            # Method 1: Use IF; command - TX status is at position 28 (0-indexed) in FT-991A
             ser.reset_input_buffer()
-            ser.write(b"TX;")
-            tx_reply = self.read_until_semicolon()
+            ser.write(b"IF;")
+            if_reply = self.read_until_semicolon()
+            
+            is_tx = None
+            
+            # FT-991A IF response format: IF[freq 11][clar +/-][clar offset 4][rit][xit][0][mem ch][ctcss][00][mode][vfo][ctcss][00][pwr]
+            # Position 28 (after IF prefix) is typically TX status: 0=RX, 1=TX
+            if if_reply and if_reply.startswith("IF") and len(if_reply) >= 32:
+                payload = if_reply[2:-1]  # Strip "IF" and ";"
+                # TX status is at position 28 in the payload for FT-991A
+                if len(payload) > 28:
+                    tx_char = payload[28]
+                    if tx_char == '1':
+                        is_tx = True
+                    elif tx_char == '0':
+                        is_tx = False
 
-            is_tx = self._parse_tx_from_tx_reply(tx_reply)
-
-            # 2) Fallback: IF; (transceiver status)
-            if is_tx is None:
-                ser.reset_input_buffer()
-                ser.write(b"IF;")
-                if_reply = self.read_until_semicolon()
-                # Optional: log once so we can see the format we get back
-                # (comment out if too noisy)
-                # self.cat_response_display.append(f">> IF;\n<< {if_reply or '[No Response]'}")
-
-                is_tx = self._parse_tx_from_if(if_reply)
-
-            # 3) Last resort: power meter (may miss unmodulated SSB).
+            # Method 2: Fallback - check power meter
             if is_tx is None:
                 ser.reset_input_buffer()
                 ser.write(b"RM5;")
@@ -2085,7 +2365,7 @@ class FT991AController(QWidget):
                 raw = 0
                 if rm.startswith("RM5") and len(rm) >= 6 and rm[3:6].isdigit():
                     raw = int(rm[3:6])  # 0..255
-                is_tx = (raw >= 10)
+                is_tx = (raw >= 10)  # If power output > threshold, we're transmitting
 
             # Update LED
             self.tx_led.set_on(bool(is_tx))
@@ -2093,51 +2373,6 @@ class FT991AController(QWidget):
         except Exception:
             # On any error, just show not transmitting
             self.tx_led.set_on(False)
-
-    def _parse_tx_from_tx_reply(self, tx_reply: str):
-        """
-        Parse 'TX;' query reply. Expected 'TX0;' (RX) or 'TX1;' (TX).
-        Return True/False or None if not parseable/unsupported.
-        """
-        if not (isinstance(tx_reply, str) and tx_reply.startswith("TX") and tx_reply.endswith(";")):
-            return None
-        if len(tx_reply) >= 4 and tx_reply[2] in "01":
-            return tx_reply[2] == "1"
-        return None
-
-    def _parse_tx_from_if(self, if_reply: str):
-        """
-        Parse TX/RX from IF; reply. This version tries positions commonly used by
-        Yaesu CAT on HF rigs, but will fall back to a heuristic scan if unknown.
-        Return True (TX), False (RX), or None (unknown).
-        """
-        if not (isinstance(if_reply, str) and if_reply.startswith("IF") and if_reply.endswith(";")):
-            return None
-
-        payload = if_reply[2:-1]
-
-        # Known fixed-field guesses for many Yaesu models.
-        # If your radio's firmware differs, we’ll still fall back below.
-        candidates = []
-        # Common spots seen across models (0-based in payload); adjust as needed:
-        # Try a handful of likely positions so one of them hits.
-        for idx in (27, 28, 29, 30, 31):
-            if 0 <= idx < len(payload) and payload[idx] in "01":
-                candidates.append(payload[idx])
-
-        # If all candidates agree, use it.
-        if candidates and all(c == candidates[0] for c in candidates):
-            return candidates[0] == "1"
-
-        # Heuristic fallback: take the last 0/1 in the payload (your original idea),
-        # but only if there are *many* bits and the last one is stable.
-        bits = [ch for ch in payload if ch in "01"]
-        if bits:
-            return bits[-1] == "1"
-
-        return None
-
-
 
 ### WIRES-X BUTTON
 
@@ -2405,6 +2640,13 @@ class FT991AController(QWidget):
 
     #DISCONNECT BTN
     def disconnect_from_radio(self):
+        # Stop connection monitor first
+        self._stop_connection_monitor()
+        
+        # Stop channel info timer
+        if hasattr(self, 'channel_info_timer') and self.channel_info_timer.isActive():
+            self.channel_info_timer.stop()
+        
         if self.serial_conn and self.serial_conn.is_open:
             self.serial_conn.close()
             self.serial_conn = None
@@ -2425,6 +2667,15 @@ class FT991AController(QWidget):
             self.status_label.setStyleSheet("color: #ffd54f; font-weight: bold; padding: 4px;")
             self.status_label.setText("Disconnected")
             self.text_display.append("🔌 Disconnected from radio")
+            
+            # Turn off TX LED
+            if hasattr(self, 'tx_led'):
+                self.tx_led.set_on(False)
+            
+            # Clear channel info display
+            if hasattr(self, 'channel_info_label'):
+                self.channel_info_label.setText("")
+                self._last_channel_info = ""
 
     
     ### V/M mode      
@@ -2771,6 +3022,120 @@ class FT991AController(QWidget):
         self._populate_com_ports(self.settings_cat_combo)
         self.settings_status.setText("🔄 COM ports refreshed")
         self.settings_status.setStyleSheet("color: #64b5f6;")
+    
+    def _build_info_tab(self):
+        """Build the Info tab with useful links"""
+        import webbrowser
+        
+        layout = QVBoxLayout(self.info_tab)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(15)
+        
+        # Common GroupBox style
+        groupbox_style = """
+            QGroupBox {
+                color: #a0c4ff;
+                font-weight: bold;
+                font-size: 14px;
+                border: 2px solid #1e3a5f;
+                border-radius: 10px;
+                margin-top: 12px;
+                padding-top: 15px;
+                background: #0d2137;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 15px;
+                padding: 0 10px;
+                background: #0d2137;
+            }
+        """
+        
+        # Link button style
+        link_btn_style = """
+            QPushButton {
+                background-color: #1565c0;
+                color: white;
+                font-weight: bold;
+                font-size: 12px;
+                border-radius: 8px;
+                padding: 12px 20px;
+                border: 2px solid #1976d2;
+                text-align: left;
+            }
+            QPushButton:hover {
+                background-color: #1976d2;
+                border-color: #42a5f5;
+            }
+        """
+        
+        # ========== LOCAL RESOURCES GROUP ==========
+        local_group = QGroupBox("📍 Local Resources - LAX Northeast")
+        local_group.setStyleSheet(groupbox_style)
+        local_layout = QVBoxLayout(local_group)
+        local_layout.setSpacing(10)
+        
+        btn_laxne = QPushButton("🏠 LAX NorthEast Website")
+        btn_laxne.setStyleSheet(link_btn_style)
+        btn_laxne.clicked.connect(lambda: webbrowser.open("https://www.laxnortheast.org/home"))
+        local_layout.addWidget(btn_laxne)
+        
+        btn_radio_plan = QPushButton("📋 LAXNORTHEAST Radio Communications Plan")
+        btn_radio_plan.setStyleSheet(link_btn_style)
+        btn_radio_plan.clicked.connect(lambda: webbrowser.open("https://docs.google.com/spreadsheets/d/1LGbFTBhhlHhICyrq31NAcdWQqQxdpF2E0W3g7aA2oxc/edit?gid=0#gid=0"))
+        local_layout.addWidget(btn_radio_plan)
+        
+        layout.addWidget(local_group)
+        
+        # ========== HAM RADIO RESOURCES GROUP ==========
+        ham_group = QGroupBox("📻 Ham Radio Resources")
+        ham_group.setStyleSheet(groupbox_style)
+        ham_layout = QVBoxLayout(ham_group)
+        ham_layout.setSpacing(10)
+        
+        btn_aprs = QPushButton("📡 APRS.fi - APRS Tracking")
+        btn_aprs.setStyleSheet(link_btn_style)
+        btn_aprs.clicked.connect(lambda: webbrowser.open("https://aprs.fi"))
+        ham_layout.addWidget(btn_aprs)
+        
+        btn_qrz = QPushButton("🔍 QRZ.com - Callsign Lookup")
+        btn_qrz.setStyleSheet(link_btn_style)
+        btn_qrz.clicked.connect(lambda: webbrowser.open("https://www.qrz.com"))
+        ham_layout.addWidget(btn_qrz)
+        
+        layout.addWidget(ham_group)
+        
+        # ========== EMERGENCY RESOURCES GROUP ==========
+        emerg_group = QGroupBox("🚨 Emergency & Government Resources")
+        emerg_group.setStyleSheet(groupbox_style)
+        emerg_layout = QVBoxLayout(emerg_group)
+        emerg_layout.setSpacing(10)
+        
+        btn_ready = QPushButton("🛡️ Ready.gov - Emergency Preparedness")
+        btn_ready.setStyleSheet(link_btn_style)
+        btn_ready.clicked.connect(lambda: webbrowser.open("https://www.ready.gov/"))
+        emerg_layout.addWidget(btn_ready)
+        
+        btn_calfire = QPushButton("🔥 California Fire & Rescue Coordination Center")
+        btn_calfire.setStyleSheet(link_btn_style)
+        btn_calfire.clicked.connect(lambda: webbrowser.open("https://www.caloes.ca.gov/office-of-the-director/operations/response-operations/fire-rescue/communications-center/"))
+        emerg_layout.addWidget(btn_calfire)
+        
+        btn_lacgis = QPushButton("🗺️ County of Los Angeles Enterprise GIS")
+        btn_lacgis.setStyleSheet(link_btn_style)
+        btn_lacgis.clicked.connect(lambda: webbrowser.open("https://egis-lacounty.hub.arcgis.com/"))
+        emerg_layout.addWidget(btn_lacgis)
+        
+        layout.addWidget(emerg_group)
+        
+        # Spacer to push everything up
+        layout.addStretch()
+        
+        # Footer with version info
+        footer = QLabel("KAT - FT-991A Controller | KO6IKR | 73!")
+        footer.setStyleSheet("color: #607d8b; font-style: italic; font-size: 11px;")
+        footer.setAlignment(Qt.AlignCenter)
+        layout.addWidget(footer)
     
     def save_settings(self):
         """Save settings to JSON file"""
