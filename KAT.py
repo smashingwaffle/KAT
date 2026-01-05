@@ -1,6 +1,7 @@
 import sys
 import time
 import json
+import string
 import xml.etree.ElementTree as ET
 from functools import partial
 from pathlib import Path
@@ -13,20 +14,15 @@ from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QLabel, QPushButton, QComboBox,
     QHBoxLayout, QMessageBox, QProgressBar, QTextEdit, QTabWidget,
     QFileDialog, QLineEdit, QStyleFactory, QGroupBox, QSlider, 
-    QCheckBox, QGridLayout, QSpinBox, QFrame
+    QCheckBox, QGridLayout, QSpinBox, QFrame, QGraphicsDropShadowEffect
 )
 from PyQt5.QtGui import (
     QPalette, QColor, QLinearGradient, QBrush, QPen, QFont, QPainter
 )
 from PyQt5.QtCore import Qt, QTimer
 
-from PyQt5.QtWidgets import QGraphicsDropShadowEffect
-
 # Settings file path
 SETTINGS_FILE = Path(__file__).parent / "kat_settings.json"
-
-SERIAL_READ_TIMEOUT_MS = 60  # quick peek window for IF reply
-from PyQt5.QtGui import QColor
 
 class LEDIndicator(QFrame):
     def __init__(self, diameter=16, color_on="#FF4D4D", color_off="#30343A",
@@ -275,12 +271,9 @@ class FrequencyDisplayLabel(QLabel):
         for x_start, x_end, index in self.digit_zones:
             if x_start <= pos_x <= x_end:
                 self.active_digit_index = index
-                print(f"[DEBUG] Digit at CAT index {index} selected.")
                 break
 
-        if self.active_digit_index is None:
-            print("[DEBUG] No digit selected.")
-        else:
+        if self.active_digit_index is not None:
             self.setFocus()  # ensure wheel events come here
 
         if self.active_digit_index != prev:
@@ -290,12 +283,10 @@ class FrequencyDisplayLabel(QLabel):
     def wheelEvent(self, event):
         # Must have a selected digit
         if self.active_digit_index is None:
-            print("[DEBUG] No digit selected. Click first.")
             return
 
         # Need an open serial connection
         if not self.controller.serial_conn or not self.controller.serial_conn.is_open:
-            print("[ERROR] Serial connection not open.")
             return
 
         # Ignore zero-delta wheels (some touchpads send this)
@@ -322,7 +313,6 @@ class FrequencyDisplayLabel(QLabel):
             # Read current FA (Hz)
             hz = self.controller._read_fa_hz()
             if hz is None:
-                print("[ERROR] Invalid FA response.")
                 return
 
             # Work with 11-digit string; we edit only the last 9 digits
@@ -331,7 +321,6 @@ class FrequencyDisplayLabel(QLabel):
 
             # Guard against bad indices
             if not (0 <= self.active_digit_index < len(tail9)):
-                print("[ERROR] Digit index out of range.")
                 return
 
             new_tail9 = self.adjust_specific_digit(tail9, self.active_digit_index, direction)
@@ -342,7 +331,6 @@ class FrequencyDisplayLabel(QLabel):
             new_hz = self.controller._clip_rig_range(new_hz)
             cmd = f"FA{new_hz:011d};"
             ser.write(cmd.encode('ascii'))
-            print(f"[DEBUG] Updated freq to: {cmd}")
 
             # Read back actual FA (rig may quantize to step size)
             time.sleep(0.12)
@@ -358,8 +346,8 @@ class FrequencyDisplayLabel(QLabel):
             self.controller.freq_display.setText(self.controller._format_hz_for_display(new_hz))
             event.accept()
 
-        except Exception as e:
-            print(f"[ERROR] Failed during wheelEvent: {e}")
+        except Exception:
+            pass
 
 
 
@@ -479,17 +467,13 @@ class FT991AController(QWidget):
         # Serial
         self.serial_conn = None
         self._poll_inhibit_until = 0.0   # used to pause FA polling after writes
-        self._cat_busy = False           # simple reentrancy guard if needed
 
         # Timers (explicit handles make cleanup easier)
         self.meter_timer = None
         self.freq_timer  = None
         self._cat_lock = threading.RLock()   # serialize CAT transactions
-        self._cat_busy = False               # light-weight guard for timers
 
         # UI/State
-        self.is_transmitting = False
-        self.poll_counter = 0
         self.current_memory = 1
 
 
@@ -637,7 +621,6 @@ class FT991AController(QWidget):
         self.pwr_meter_label.setStyleSheet("color: #64b5f6; font-weight: bold; font-size: 10px;")
 
         # Start meter polling
-        self.is_transmitting = False
         self.start_meter_polling()
         self.tx_timer = QTimer(self)
         self.tx_timer.setInterval(250)
@@ -1107,25 +1090,21 @@ class FT991AController(QWidget):
 
             if self._meter_toggle:
                 # --- PWR meter (RM5)
-                self.serial_conn.reset_input_buffer()
-                self.serial_conn.write(b'RM5;')
-                resp = self.read_until_semicolon()
+                resp = self._cat("RM5;")
                 if resp.startswith('RM5') and len(resp) >= 6 and resp[3:6].isdigit():
                     raw = int(resp[3:6])              # 0..255
                     val = max(0, min(100, int(round(raw * 100 / 255))))
                     self.pwr_meter.set_value(val)
             else:
                 # --- S meter (RM1)
-                self.serial_conn.reset_input_buffer()
-                self.serial_conn.write(b'RM1;')
-                resp = self.read_until_semicolon()
+                resp = self._cat("RM1;")
                 if resp.startswith('RM1') and len(resp) >= 6 and resp[3:6].isdigit():
                     raw = int(resp[3:6])              # 0..255
                     val = max(0, min(100, int(round(raw * 100 / 255))))
                     self.s_meter.set_value(val)
 
-        except Exception as e:
-            print(f"[ERROR] Meter update failed: {e}")
+        except Exception:
+            pass
 
     def stop_meter_polling(self):
         t = getattr(self, "meter_timer", None)
@@ -1201,16 +1180,42 @@ class FT991AController(QWidget):
 
 
 #CAT RETURN mesg
-    def read_until_semicolon(self):
-        response = b""                              # Start with an empty bytes object
-        timeout = time.time() + 0.5                  # Set a timeout (0.5 seconds from now)
-        while time.time() < timeout:                 # Loop until timeout expires
-            part = self.serial_conn.read(1)          # Read one byte from the serial port
+    def read_until_semicolon(self, timeout_sec=0.5):
+        """Read bytes from serial until ';' terminator or timeout."""
+        response = b""
+        timeout = time.time() + timeout_sec
+        while time.time() < timeout:
+            if not (self.serial_conn and self.serial_conn.is_open):
+                break
+            part = self.serial_conn.read(1)
             if part:
-                response += part                     # Add the byte to the response
-                if part == b';':                     # Check if the byte is the CAT terminator ';'
-                    break                            # If yes, stop reading (completed message)
+                response += part
+                if part == b';':
+                    break
         return response.decode('ascii', errors='ignore').strip()
+
+    def _cat(self, cmd, timeout_sec=0.5):
+        """Thread-safe CAT command helper. Send cmd, return response string.
+        
+        Args:
+            cmd: Command string (e.g. "FA;" or "MC059;") - semicolon required
+            timeout_sec: Read timeout in seconds
+            
+        Returns:
+            Response string (e.g. "FA014250000;") or "" on error/timeout
+        """
+        if not (self.serial_conn and self.serial_conn.is_open):
+            return ""
+        
+        with self._cat_lock:
+            try:
+                self.serial_conn.reset_input_buffer()
+                if isinstance(cmd, str):
+                    cmd = cmd.encode('ascii')
+                self.serial_conn.write(cmd)
+                return self.read_until_semicolon(timeout_sec)
+            except Exception:
+                return ""
     
         # --- frequency helpers (needed by set_simplex, update_frequency_display, etc.) ---
     def _clip_rig_range(self, hz):
@@ -1235,9 +1240,7 @@ class FT991AController(QWidget):
         if not (self.serial_conn and self.serial_conn.is_open):
             return None
         try:
-            self.serial_conn.reset_input_buffer()
-            self.serial_conn.write(b"FA;")
-            resp = self.read_until_semicolon()
+            resp = self._cat("FA;")
             if not (resp.startswith("FA") and resp.endswith(";")):
                 return None
             digits = "".join(ch for ch in resp[2:-1] if ch.isdigit())
@@ -1255,11 +1258,7 @@ class FT991AController(QWidget):
             return None, None, None
         try:
             # Get current memory channel with MC;
-            self.serial_conn.reset_input_buffer()
-            self.serial_conn.write(b"MC;")
-            mc_resp = self.read_until_semicolon()
-            
-            print(f"[DEBUG channel_info] MC response: {mc_resp}")
+            mc_resp = self._cat("MC;")
             
             if not (mc_resp.startswith("MC") and len(mc_resp) >= 6):
                 return None, None, None
@@ -1275,9 +1274,7 @@ class FT991AController(QWidget):
             # If channel 000, we're in VFO mode
             if channel_num == 0:
                 # Get mode from MD;
-                self.serial_conn.reset_input_buffer()
-                self.serial_conn.write(b"MD0;")
-                md_resp = self.read_until_semicolon()
+                md_resp = self._cat("MD0;")
                 mode_char = md_resp[3] if len(md_resp) >= 5 else '?'
                 mode_map = {
                     '1': 'LSB', '2': 'USB', '3': 'CW', '4': 'FM', '5': 'AM',
@@ -1289,11 +1286,7 @@ class FT991AController(QWidget):
             
             # Now query MT{channel}; to get the tag and mode
             time.sleep(0.05)
-            self.serial_conn.reset_input_buffer()
-            self.serial_conn.write(f"MT{channel_num:03d};".encode("ascii"))
-            mt_resp = self.read_until_semicolon()
-            
-            print(f"[DEBUG channel_info] MT response: {mt_resp}")
+            mt_resp = self._cat(f"MT{channel_num:03d};")
             
             if not (mt_resp.startswith("MT") and len(mt_resp) >= 30):
                 return channel_num, f"CH {channel_num:03d}", "?"
@@ -1327,33 +1320,24 @@ class FT991AController(QWidget):
             if len(mt_payload) >= 27:
                 tag = mt_payload[26:].strip()
             
-            print(f"[DEBUG channel_info] Extracted - channel: {channel_num}, tag: '{tag}', mode: {mode_str}")
-            
             if tag:
                 return channel_num, tag, mode_str
             
             return channel_num, f"CH {channel_num:03d}", mode_str
             
         except Exception as e:
-            print(f"[ERROR] Memory channel info read failed: {e}")
             return None, None, None
 
     def update_channel_info_display(self):
         """Update the channel info label with current memory channel and tag."""
-        print("[DEBUG] update_channel_info_display called")
-        
         if not (self.serial_conn and self.serial_conn.is_open):
-            print("[DEBUG] No serial connection")
             return
         try:
             # Skip if in poll inhibit window
             if getattr(self, "_poll_inhibit_until", 0) > time.time():
-                print("[DEBUG] In poll inhibit window, skipping")
                 return
             
             channel_num, tag, mode_str = self._read_memory_channel_info()
-            
-            print(f"[DEBUG] Got: channel={channel_num}, tag={tag}, mode={mode_str}")
             
             if tag is None:
                 info_text = ""
@@ -1364,16 +1348,13 @@ class FT991AController(QWidget):
                 # Memory mode - show channel number, tag, and mode
                 info_text = f"📍 M{channel_num:03d}: {tag}  |  Mode: {mode_str}"
             
-            print(f"[DEBUG] Setting label to: {info_text}")
-            
             # Only update if changed
             if getattr(self, "_last_channel_info", "") != info_text:
                 self._last_channel_info = info_text
                 self.channel_info_label.setText(info_text)
-                print("[DEBUG] Label updated!")
                 
         except Exception as e:
-            print(f"[ERROR] Channel info update failed: {e}")
+            pass
 
     # ### Frequency Display Live Polling
     def update_frequency_display(self):
@@ -1393,8 +1374,8 @@ class FT991AController(QWidget):
                 self._last_fa_hz = hz
                 self.freq_display.setText(self._format_hz_for_display(hz))
 
-        except Exception as e:
-            print(f"[ERROR] Frequency read failed: {e}")
+        except Exception:
+            pass
 
 
 
@@ -1433,10 +1414,9 @@ class FT991AController(QWidget):
 
             self._last_fa_hz = new_hz
             self.freq_display.setText(self._format_hz_for_display(new_hz))
-            print(f"[DEBUG] Frequency adjusted to: FA{new_hz:011d};")
 
-        except Exception as e:
-            print(f"[ERROR] Frequency adjust failed: {e}")
+        except Exception:
+            pass
 
 
 
@@ -1803,36 +1783,6 @@ class FT991AController(QWidget):
 
 
 
-    def _cat(self, cmd: bytes, read_reply: bool = True, timeout_s: float = 0.8) -> str:
-        """
-        Serialized CAT transaction: write one command, optionally read one ';'-terminated reply.
-        Returns decoded string (or "").
-        """
-        if not (self.serial_conn and self.serial_conn.is_open):
-            return ""
-
-        with self._cat_lock:
-            try:
-                # Only clear input *while locked*, so we don't nuke someone else's reply
-                self.serial_conn.reset_input_buffer()
-                self.serial_conn.reset_output_buffer()
-                self.serial_conn.write(cmd)
-                if not read_reply:
-                    return ""
-                # Read a single frame
-                deadline = time.time() + timeout_s
-                buf = bytearray()
-                while time.time() < deadline:
-                    ch = self.serial_conn.read(1)
-                    if ch:
-                        buf += ch
-                        if ch == b';':
-                            break
-                return buf.decode("ascii", errors="ignore").strip()
-            except Exception:
-                return ""
-
-
 ###APRS BUTTON
 
     def activate_aprs_memory(self, file):
@@ -2057,20 +2007,9 @@ class FT991AController(QWidget):
             # Try a simple ID query to verify radio is responding
             # Only do this if we're not in the middle of another operation
             if time.time() > getattr(self, '_poll_inhibit_until', 0):
-                self.serial_conn.reset_input_buffer()
-                self.serial_conn.write(b"ID;")
+                response = self._cat("ID;", timeout_sec=0.3)
                 
-                # Quick timeout read
-                response = b""
-                start = time.time()
-                while time.time() - start < 0.3:  # 300ms timeout
-                    part = self.serial_conn.read(1)
-                    if part:
-                        response += part
-                        if part == b';':
-                            break
-                
-                if response and b'ID' in response:
+                if response and response.startswith('ID'):
                     # Connection is good, reset fail counter
                     self._conn_fail_count = 0
                 else:
@@ -2336,12 +2275,8 @@ class FT991AController(QWidget):
             return
 
         try:
-            ser = self.serial_conn
-
             # Method 1: Use IF; command - TX status is at position 28 (0-indexed) in FT-991A
-            ser.reset_input_buffer()
-            ser.write(b"IF;")
-            if_reply = self.read_until_semicolon()
+            if_reply = self._cat("IF;")
             
             is_tx = None
             
@@ -2359,9 +2294,7 @@ class FT991AController(QWidget):
 
             # Method 2: Fallback - check power meter
             if is_tx is None:
-                ser.reset_input_buffer()
-                ser.write(b"RM5;")
-                rm = self.read_until_semicolon() or ""
+                rm = self._cat("RM5;")
                 raw = 0
                 if rm.startswith("RM5") and len(rm) >= 6 and rm[3:6].isdigit():
                     raw = int(rm[3:6])  # 0..255
@@ -2544,9 +2477,6 @@ class FT991AController(QWidget):
             self._apply_settings_from_file(filename)
 
 
-    def save_radio_to_file(self):
-        QMessageBox.information(self, "Not Implemented", "Saving radio settings is not yet implemented.")
-    
 
 #load all menus
     def load_all_menus(self):
@@ -3104,6 +3034,29 @@ class FT991AController(QWidget):
         ham_layout.addWidget(btn_qrz)
         
         layout.addWidget(ham_group)
+        
+        # ========== REPEATER DIRECTORIES GROUP ==========
+        repeater_group = QGroupBox("📡 Repeater Directories")
+        repeater_group.setStyleSheet(groupbox_style)
+        repeater_layout = QVBoxLayout(repeater_group)
+        repeater_layout.setSpacing(10)
+        
+        btn_darn = QPushButton("🔁 DARN Repeaters")
+        btn_darn.setStyleSheet(link_btn_style)
+        btn_darn.clicked.connect(lambda: webbrowser.open("https://darn.org/repeaters/"))
+        repeater_layout.addWidget(btn_darn)
+        
+        btn_radioreference = QPushButton("📻 Radio Reference - LA County")
+        btn_radioreference.setStyleSheet(link_btn_style)
+        btn_radioreference.clicked.connect(lambda: webbrowser.open("https://www.radioreference.com/db/browse/ctid/201"))
+        repeater_layout.addWidget(btn_radioreference)
+        
+        btn_repeaterbook = QPushButton("📖 RepeaterBook - Los Angeles")
+        btn_repeaterbook.setStyleSheet(link_btn_style)
+        btn_repeaterbook.clicked.connect(lambda: webbrowser.open("https://www.repeaterbook.com/repeaters/location_search.php?type=county&state_id=06&loc=Los%20Angeles"))
+        repeater_layout.addWidget(btn_repeaterbook)
+        
+        layout.addWidget(repeater_group)
         
         # ========== EMERGENCY RESOURCES GROUP ==========
         emerg_group = QGroupBox("🚨 Emergency & Government Resources")
