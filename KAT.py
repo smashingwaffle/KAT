@@ -14,7 +14,8 @@ from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QLabel, QPushButton, QComboBox,
     QHBoxLayout, QMessageBox, QProgressBar, QTextEdit, QTabWidget,
     QFileDialog, QLineEdit, QStyleFactory, QGroupBox, QSlider, 
-    QCheckBox, QGridLayout, QSpinBox, QFrame, QGraphicsDropShadowEffect
+    QCheckBox, QGridLayout, QSpinBox, QFrame, QGraphicsDropShadowEffect,
+    QCalendarWidget
 )
 from PyQt5.QtGui import (
     QPalette, QColor, QLinearGradient, QBrush, QPen, QFont, QPainter
@@ -1091,17 +1092,33 @@ class FT991AController(QWidget):
             if self._meter_toggle:
                 # --- PWR meter (RM5)
                 resp = self._cat("RM5;")
-                if resp.startswith('RM5') and len(resp) >= 6 and resp[3:6].isdigit():
-                    raw = int(resp[3:6])              # 0..255
-                    val = max(0, min(100, int(round(raw * 100 / 255))))
-                    self.pwr_meter.set_value(val)
+                # Response format: RM5NNN; where NNN is 000-255
+                if resp.startswith('RM5'):
+                    num_part = resp[3:].rstrip(';')
+                    if num_part.isdigit():
+                        raw = int(num_part)  # 0..255 from radio
+                        # PWR: direct percentage scaling
+                        val = max(0, min(100, int(round(raw * 100 / 255))))
+                        self.pwr_meter.set_value(val)
             else:
                 # --- S meter (RM1)
                 resp = self._cat("RM1;")
-                if resp.startswith('RM1') and len(resp) >= 6 and resp[3:6].isdigit():
-                    raw = int(resp[3:6])              # 0..255
-                    val = max(0, min(100, int(round(raw * 100 / 255))))
-                    self.s_meter.set_value(val)
+                # Response format: RM1NNN; where NNN is 000-255
+                if resp.startswith('RM1'):
+                    num_part = resp[3:].rstrip(';')
+                    if num_part.isdigit():
+                        raw = int(num_part)  # 0..255 from radio
+                        # FT-991A S-meter scaling:
+                        # Raw 0-128 = S0-S9 (0-50% of our display)
+                        # Raw 128-255 = S9 to S9+60dB (50-100% of our display)
+                        if raw <= 128:
+                            # S0 to S9 range - map to 0-50%
+                            val = int(round(raw * 50 / 128))
+                        else:
+                            # S9+ range - map to 50-100%
+                            val = 50 + int(round((raw - 128) * 50 / 127))
+                        val = max(0, min(100, val))
+                        self.s_meter.set_value(val)
 
         except Exception:
             pass
@@ -2954,43 +2971,49 @@ class FT991AController(QWidget):
         self.settings_status.setStyleSheet("color: #64b5f6;")
     
     def _build_info_tab(self):
-        """Build the Info tab with useful links"""
+        """Build the Info tab with useful links and calendar"""
         import webbrowser
         
-        layout = QVBoxLayout(self.info_tab)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(15)
+        main_layout = QHBoxLayout(self.info_tab)
+        main_layout.setContentsMargins(15, 15, 15, 15)
+        main_layout.setSpacing(15)
         
-        # Common GroupBox style
+        # Left side - links
+        left_widget = QWidget()
+        layout = QVBoxLayout(left_widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        
+        # Common GroupBox style (more compact)
         groupbox_style = """
             QGroupBox {
                 color: #a0c4ff;
                 font-weight: bold;
-                font-size: 14px;
-                border: 2px solid #1e3a5f;
-                border-radius: 10px;
-                margin-top: 12px;
-                padding-top: 15px;
+                font-size: 12px;
+                border: 1px solid #1e3a5f;
+                border-radius: 8px;
+                margin-top: 10px;
+                padding-top: 10px;
                 background: #0d2137;
             }
             QGroupBox::title {
                 subcontrol-origin: margin;
-                left: 15px;
-                padding: 0 10px;
+                left: 10px;
+                padding: 0 5px;
                 background: #0d2137;
             }
         """
         
-        # Link button style
+        # Link button style (more compact)
         link_btn_style = """
             QPushButton {
                 background-color: #1565c0;
                 color: white;
                 font-weight: bold;
-                font-size: 12px;
-                border-radius: 8px;
-                padding: 12px 20px;
-                border: 2px solid #1976d2;
+                font-size: 11px;
+                border-radius: 6px;
+                padding: 8px 12px;
+                border: 1px solid #1976d2;
                 text-align: left;
             }
             QPushButton:hover {
@@ -3000,17 +3023,18 @@ class FT991AController(QWidget):
         """
         
         # ========== LOCAL RESOURCES GROUP ==========
-        local_group = QGroupBox("📍 Local Resources - LAX Northeast")
+        local_group = QGroupBox("📍 Local Resources")
         local_group.setStyleSheet(groupbox_style)
         local_layout = QVBoxLayout(local_group)
-        local_layout.setSpacing(10)
+        local_layout.setSpacing(5)
+        local_layout.setContentsMargins(8, 8, 8, 8)
         
         btn_laxne = QPushButton("🏠 LAX NorthEast Website")
         btn_laxne.setStyleSheet(link_btn_style)
         btn_laxne.clicked.connect(lambda: webbrowser.open("https://www.laxnortheast.org/home"))
         local_layout.addWidget(btn_laxne)
         
-        btn_radio_plan = QPushButton("📋 LAXNORTHEAST Radio Communications Plan")
+        btn_radio_plan = QPushButton("📋 LAXNORTHEAST Radio Comms Plan")
         btn_radio_plan.setStyleSheet(link_btn_style)
         btn_radio_plan.clicked.connect(lambda: webbrowser.open("https://docs.google.com/spreadsheets/d/1LGbFTBhhlHhICyrq31NAcdWQqQxdpF2E0W3g7aA2oxc/edit?gid=0#gid=0"))
         local_layout.addWidget(btn_radio_plan)
@@ -3021,7 +3045,8 @@ class FT991AController(QWidget):
         ham_group = QGroupBox("📻 Ham Radio Resources")
         ham_group.setStyleSheet(groupbox_style)
         ham_layout = QVBoxLayout(ham_group)
-        ham_layout.setSpacing(10)
+        ham_layout.setSpacing(5)
+        ham_layout.setContentsMargins(8, 8, 8, 8)
         
         btn_aprs = QPushButton("📡 APRS.fi - APRS Tracking")
         btn_aprs.setStyleSheet(link_btn_style)
@@ -3039,7 +3064,8 @@ class FT991AController(QWidget):
         repeater_group = QGroupBox("📡 Repeater Directories")
         repeater_group.setStyleSheet(groupbox_style)
         repeater_layout = QVBoxLayout(repeater_group)
-        repeater_layout.setSpacing(10)
+        repeater_layout.setSpacing(5)
+        repeater_layout.setContentsMargins(8, 8, 8, 8)
         
         btn_darn = QPushButton("🔁 DARN Repeaters")
         btn_darn.setStyleSheet(link_btn_style)
@@ -3059,36 +3085,106 @@ class FT991AController(QWidget):
         layout.addWidget(repeater_group)
         
         # ========== EMERGENCY RESOURCES GROUP ==========
-        emerg_group = QGroupBox("🚨 Emergency & Government Resources")
+        emerg_group = QGroupBox("🚨 Emergency Resources")
         emerg_group.setStyleSheet(groupbox_style)
         emerg_layout = QVBoxLayout(emerg_group)
-        emerg_layout.setSpacing(10)
+        emerg_layout.setSpacing(5)
+        emerg_layout.setContentsMargins(8, 8, 8, 8)
         
         btn_ready = QPushButton("🛡️ Ready.gov - Emergency Preparedness")
         btn_ready.setStyleSheet(link_btn_style)
         btn_ready.clicked.connect(lambda: webbrowser.open("https://www.ready.gov/"))
         emerg_layout.addWidget(btn_ready)
         
-        btn_calfire = QPushButton("🔥 California Fire & Rescue Coordination Center")
+        btn_calfire = QPushButton("🔥 CalOES Fire & Rescue")
         btn_calfire.setStyleSheet(link_btn_style)
         btn_calfire.clicked.connect(lambda: webbrowser.open("https://www.caloes.ca.gov/office-of-the-director/operations/response-operations/fire-rescue/communications-center/"))
         emerg_layout.addWidget(btn_calfire)
         
-        btn_lacgis = QPushButton("🗺️ County of Los Angeles Enterprise GIS")
+        btn_lacgis = QPushButton("🗺️ LA County Enterprise GIS")
         btn_lacgis.setStyleSheet(link_btn_style)
         btn_lacgis.clicked.connect(lambda: webbrowser.open("https://egis-lacounty.hub.arcgis.com/"))
         emerg_layout.addWidget(btn_lacgis)
         
         layout.addWidget(emerg_group)
         
-        # Spacer to push everything up
         layout.addStretch()
         
-        # Footer with version info
+        # Footer
         footer = QLabel("KAT - FT-991A Controller | KO6IKR | 73!")
-        footer.setStyleSheet("color: #607d8b; font-style: italic; font-size: 11px;")
+        footer.setStyleSheet("color: #607d8b; font-style: italic; font-size: 10px;")
         footer.setAlignment(Qt.AlignCenter)
         layout.addWidget(footer)
+        
+        main_layout.addWidget(left_widget, stretch=1)
+        
+        # ========== RIGHT SIDE - CALENDAR ==========
+        right_widget = QWidget()
+        right_layout = QVBoxLayout(right_widget)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(10)
+        
+        calendar_group = QGroupBox("📅 Calendar")
+        calendar_group.setStyleSheet(groupbox_style)
+        calendar_layout = QVBoxLayout(calendar_group)
+        calendar_layout.setContentsMargins(10, 10, 10, 10)
+        
+        self.calendar = QCalendarWidget()
+        self.calendar.setStyleSheet("""
+            QCalendarWidget {
+                background-color: #0a1929;
+                color: #a0c4ff;
+            }
+            QCalendarWidget QToolButton {
+                color: #a0c4ff;
+                background-color: #1a3a5c;
+                border: 1px solid #1e3a5f;
+                border-radius: 4px;
+                padding: 4px;
+                margin: 2px;
+            }
+            QCalendarWidget QToolButton:hover {
+                background-color: #2a4a6c;
+            }
+            QCalendarWidget QMenu {
+                background-color: #0d2137;
+                color: #a0c4ff;
+            }
+            QCalendarWidget QSpinBox {
+                background-color: #1a3a5c;
+                color: #a0c4ff;
+                border: 1px solid #1e3a5f;
+            }
+            QCalendarWidget QTableView {
+                background-color: #0a1929;
+                selection-background-color: #1565c0;
+                selection-color: white;
+                alternate-background-color: #0d2137;
+            }
+            QCalendarWidget QHeaderView::section {
+                background-color: #1a3a5c;
+                color: #64b5f6;
+                padding: 4px;
+                border: 1px solid #1e3a5f;
+            }
+            QCalendarWidget QAbstractItemView:enabled {
+                color: #a0c4ff;
+                background-color: #0a1929;
+                selection-background-color: #1565c0;
+                selection-color: white;
+            }
+            QCalendarWidget QAbstractItemView:disabled {
+                color: #4a5a6f;
+            }
+        """)
+        self.calendar.setGridVisible(True)
+        self.calendar.setVerticalHeaderFormat(QCalendarWidget.NoVerticalHeader)
+        
+        calendar_layout.addWidget(self.calendar)
+        right_layout.addWidget(calendar_group)
+        right_layout.addStretch()
+        
+        main_layout.addWidget(right_widget, stretch=1)
     
     def save_settings(self):
         """Save settings to JSON file"""
