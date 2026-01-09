@@ -672,7 +672,7 @@ class FT991AController(QWidget):
 
         # ========== SIMPLEX FREQUENCIES GROUP ==========
         simplex_group = QGroupBox("📡 Simplex Frequencies", self.main_tab)
-        simplex_group.setGeometry(15, 180, 490, 80)
+        simplex_group.setGeometry(15, 220, 490, 80)
         simplex_group.setStyleSheet(groupbox_style)
 
         btn_style_cyan = """
@@ -705,7 +705,7 @@ class FT991AController(QWidget):
 
         # ========== DARN MEMORIES GROUP ==========
         darn_group = QGroupBox("🔖 DARN Memories", self.main_tab)
-        darn_group.setGeometry(15, 270, 180, 80)
+        darn_group.setGeometry(15, 320, 180, 80)
         darn_group.setStyleSheet(groupbox_style)
 
         self.btn_mem_darn3 = QPushButton("DARN 3", darn_group)
@@ -720,7 +720,7 @@ class FT991AController(QWidget):
 
         # ========== MODE PRESETS GROUP ==========
         presets_group = QGroupBox("🎛️ Mode Presets", self.main_tab)
-        presets_group.setGeometry(15, 360, 590, 130)
+        presets_group.setGeometry(15, 440, 590, 130)
         presets_group.setStyleSheet(groupbox_style)
 
         btn_style_blue = """
@@ -792,7 +792,7 @@ class FT991AController(QWidget):
 
         # ========== FILE OPERATIONS GROUP ==========
         file_group = QGroupBox("📁 File Operations", self.main_tab)
-        file_group.setGeometry(15, 550, 490, 85)
+        file_group.setGeometry(15, 600, 490, 85)
         file_group.setStyleSheet(groupbox_style)
 
         self.save_btn = QPushButton("📥 Download From Radio", file_group)
@@ -829,11 +829,11 @@ class FT991AController(QWidget):
 
         # ========== STATUS & PROGRESS ==========
         self.status_label = QLabel("Ready - Configure COM port in Settings tab", self.main_tab)
-        self.status_label.setGeometry(15, 685, 300, 28)
+        self.status_label.setGeometry(15, 735, 300, 28)
         self.status_label.setStyleSheet("color: #ffd54f; font-weight: bold; font-size: 13px;")
 
         self.progress_bar = QProgressBar(self.main_tab)
-        self.progress_bar.setGeometry(15, 660, 490, 25)
+        self.progress_bar.setGeometry(15, 700, 490, 25)
         self.progress_bar.setValue(0)
         self.progress_bar.setStyleSheet("""
             QProgressBar {
